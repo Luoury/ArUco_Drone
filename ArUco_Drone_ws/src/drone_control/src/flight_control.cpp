@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <future>
 #include <string>
 #include <thread>
@@ -320,6 +321,152 @@ bool FlightControl::landNow(const EnuPose & hold, double rate_hz, std::chrono::s
 {
   RCLCPP_WARN(node_->get_logger(), "切换到 AUTO.LAND");
   return setModeWhileStreaming("AUTO.LAND", hold, rate_hz, timeout);
+}
+
+// ------------------------------------------------- 需求书 §5 的高层原语
+
+bool FlightControl::takeoffTo(const EnuPose & target, double rate_hz, double altitude_tolerance,
+  std::chrono::seconds climb_timeout, const OffboardOptions & options)
+{
+  const auto logger = node_->get_logger();
+
+  if (state_.armed) {
+    // 上一轮没收尾干净：先落到 LOITER 再上锁，避免带桨继续爬升
+    RCLCPP_WARN(logger, "起飞前检测到已 armed，先切 AUTO.LOITER 并上锁");
+    setModeWhileStreaming("AUTO.LOITER", localPose(), rate_hz, options.mode_timeout);
+    armWhileStreaming(false, localPose(), rate_hz, options.arm_timeout);
+  }
+
+  // ① AUTO.TAKEOFF + 解锁（本机 OFFBOARD 无法从地面起飞，见需求书 §6.4 坑 4）
+  RCLCPP_INFO(logger, "① AUTO.TAKEOFF 起飞（目标高度 %.2f m）", target.z);
+  if (!setModeWhileStreaming("AUTO.TAKEOFF", target, rate_hz, options.mode_timeout)) {
+    RCLCPP_ERROR(logger, "切 AUTO.TAKEOFF 失败");
+    return false;
+  }
+  if (!armWhileStreaming(true, target, rate_hz, options.arm_timeout)) {
+    RCLCPP_ERROR(logger, "解锁失败");
+    return false;
+  }
+
+  // ② 等离地（z 到 target.z - tolerance）
+  const double want_z = target.z - altitude_tolerance;
+  if (!streamUntilPredicate(target, 0.0, rate_hz, climb_timeout,
+      [this, want_z]() {return localPose().z >= want_z; }))
+  {
+    RCLCPP_ERROR(logger, "起飞爬升超时（%lld s）",
+      static_cast<long long>(climb_timeout.count()));
+    return false;
+  }
+  RCLCPP_INFO(logger, "② 已离地 %.2f m", localPose().z);
+
+  // ③ 预发位置设定点，让 PX4 的 OFFBOARD 看门狗先吃饱（§5.3 要求 ≥2 s）
+  RCLCPP_INFO(logger, "③ 预发位置设定点 %.0f ms @ %.0f Hz",
+    static_cast<double>(options.prestream.count()), rate_hz);
+  if (!streamPositionSetpoint(target, 0.0, options.prestream, rate_hz)) {
+    RCLCPP_ERROR(logger, "预发设定点期间中断（rclcpp 已 shutdown？）");
+    return false;
+  }
+
+  // ④ 切 OFFBOARD 并等状态回读
+  if (!setModeWhileStreaming("OFFBOARD", target, rate_hz, options.mode_timeout)) {
+    RCLCPP_ERROR(logger, "SetMode(OFFBOARD) 失败");
+    return false;
+  }
+  const auto deadline = SteadyClock::now() + options.mode_timeout;
+  while (rclcpp::ok() && SteadyClock::now() < deadline) {
+    publishPositionSetpoint(target, 0.0);
+    spinOnce();
+    if (state_.armed && state_.mode == "OFFBOARD") {
+      RCLCPP_INFO(logger, "④ OFFBOARD 已接管，armed=%s",
+        state_.armed ? "true" : "false");
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(periodMs(rate_hz))));
+  }
+  RCLCPP_ERROR(logger, "等 OFFBOARD 回读超时（mode=%s armed=%s）", state_.mode.c_str(),
+    state_.armed ? "true" : "false");
+  return false;
+}
+
+bool FlightControl::takeoff(double altitude, const OffboardOptions & options,
+  double altitude_tolerance)
+{
+  const EnuPose now = localPose();
+  return takeoffTo(EnuPose{now.x, now.y, altitude}, options.rate_hz, altitude_tolerance,
+           std::chrono::seconds(30), options);
+}
+
+bool FlightControl::land(const EnuPose & hold, double rate_hz, std::chrono::seconds timeout)
+{
+  const auto logger = node_->get_logger();
+  if (!landNow(hold, rate_hz, timeout)) {
+    RCLCPP_ERROR(logger, "切 AUTO.LAND 失败");
+    return false;
+  }
+  const auto deadline = SteadyClock::now() + timeout;
+  while (rclcpp::ok() && SteadyClock::now() < deadline) {
+    if (!state_.armed) {
+      RCLCPP_INFO(logger, "已上锁，降落完成");
+      return true;
+    }
+    publishPositionSetpoint(localPose(), 0.0);
+    spinOnce();
+    std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(periodMs(rate_hz))));
+  }
+  RCLCPP_ERROR(logger, "降落超时（%lld s）仍未上锁", static_cast<long long>(timeout.count()));
+  return false;
+}
+
+bool FlightControl::hover(const EnuPose & target, std::chrono::seconds duration, double rate_hz)
+{
+  const auto end = SteadyClock::now() + duration;
+  const auto period = std::chrono::milliseconds(static_cast<int>(periodMs(rate_hz)));
+  while (rclcpp::ok() && SteadyClock::now() < end) {
+    publishPositionSetpoint(target, 0.0);
+    spinOnce();
+    std::this_thread::sleep_for(period);
+  }
+  return rclcpp::ok();
+}
+
+bool FlightControl::gotoPosition(const EnuPose & target, double tolerance,
+  std::chrono::seconds timeout, double rate_hz)
+{
+  const auto deadline = SteadyClock::now() + timeout;
+  const auto period = std::chrono::milliseconds(static_cast<int>(periodMs(rate_hz)));
+  while (rclcpp::ok() && SteadyClock::now() < deadline) {
+    publishPositionSetpoint(target, 0.0);
+    spinOnce();
+    const EnuPose now = localPose();
+    const double dx = now.x - target.x;
+    const double dy = now.y - target.y;
+    const double dz = now.z - target.z;
+    if (std::sqrt(dx * dx + dy * dy + dz * dz) <= tolerance) {
+      return true;
+    }
+    std::this_thread::sleep_for(period);
+  }
+  return false;
+}
+
+bool FlightControl::velocity(const EnuVelocity & vel, double yaw_rate_enu,
+  std::chrono::seconds duration, double rate_hz)
+{
+  const auto end = SteadyClock::now() + duration;
+  const auto period = std::chrono::milliseconds(static_cast<int>(periodMs(rate_hz)));
+  const EnuPose v{vel.vx, vel.vy, vel.vz};
+  while (rclcpp::ok() && SteadyClock::now() < end) {
+    publishVelocitySetpoint(v, yaw_rate_enu);
+    spinOnce();
+    std::this_thread::sleep_for(period);
+  }
+  return rclcpp::ok();
+}
+
+double FlightControl::yaw() const
+{
+  const auto & q = pose_.pose.orientation;
+  return std::atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z));
 }
 
 // -------------------------------------------------------------------- 自旋

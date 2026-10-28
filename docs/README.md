@@ -11,9 +11,12 @@ ArUco_Drone/
 │   ├── drone_interfaces/   # msg/MissionStatus.msg, srv/SetMode.srv
 │   ├── drone_bringup/      # launch + config（唯一参数来源）+ gz_sensor_bridge
 │   ├── drone_control/      # C++ 飞行控制库 flight_control + hover_test
-│   └── drone_aruco/        # aruco_detector
+│   ├── drone_aruco/        # aruco_detector
+│   ├── drone_mission/      # mission_manager（模式调度 + 设定点唯一出口）
+│   ├── drone_teleop/       # 键盘遥控 teleop_node
+│   └── drone_tools/        # verify_flow 流程自动验收
 ├── scripts/                # 启动、诊断、验收脚本
-├── docs/                   # 本文档与 troubleshooting.md
+├── docs/                   # 本文档、troubleshooting.md、stage_reports.md
 └── logs/                   # 运行日志（git 忽略）
 ```
 
@@ -33,7 +36,16 @@ ros2 run drone_control hover_test
 ```
 
 一键联调（含健康检查与验收）：
-`bash scripts/dev_run_hover.sh`（M0）、`bash scripts/dev_run_aruco.sh`（M1）。
+`bash scripts/dev_run_hover.sh`（M0）、`bash scripts/dev_run_aruco.sh`（M1）、
+`bash scripts/dev_run_f1.sh`（M2 的 F1 流程，自动跑完并打印 `[FLOW F1] RESULT:`）。
+
+人工试飞 F1（需要真实终端，键盘模式下才看得到按键响应）：
+
+```bash
+bash ~/ArUco_Drone/scripts/start_until_healthy.sh aruco 3
+source /opt/ros/humble/setup.bash && source ~/ArUco_Drone/ArUco_Drone_ws/install/setup.bash
+ros2 launch drone_bringup flow_f1.launch.py start_teleop:=true
+```
 
 停止：`bash scripts/sim.sh stop`；清 ROS 进程：`bash scripts/stop_ros.sh`。
 
@@ -64,6 +76,12 @@ ros2 run drone_control hover_test
     残余误差来源：PX4 EKF 相对 gz 真值本身有 2~6 cm 抖动
     （`m1_frame_check.py` 实测 14 组，无恒定偏置），逐帧噪声再叠加约 2 cm。
     后续在降落控制里用时序滤波（需求书 §7 本来就要做）收敛这一项。
+- **M2 飞控封装 + 键盘 + F1：PASS**。`verify_flow --flow F1` 实测
+  `takeoff_altitude = 2.06 m`（判据 >1.2）、`final_altitude = -0.00 m`（判据 <0.2）、
+  飞行中最低 0.98 m（无 crash）→ `[FLOW F1] RESULT: PASS`。
+  已知现象：OFFBOARD **速度**模式下 `vz=0` 不保高，水平机动时掉高约 1 m；
+  F3 的航点飞行改用**位置**设定点（自带高度保持）后再复核。
+- M3 视觉伺服降落 + F2：下一步。
 
 ## 脚本清单
 
@@ -80,6 +98,7 @@ ros2 run drone_control hover_test
 | `scripts/probe_motors.sh` | 采样 gz 电机指令，判断 PX4 是否真在出力 |
 | `scripts/dev_run_hover.sh` | M0 一键联调 + 验收 |
 | `scripts/dev_run_aruco.sh` | M1 一键联调 + 验收（`ARUCO_POSE_TOPIC` 可切位姿源） |
+| `scripts/dev_run_f1.sh` | M2：起 SITL + `flow_f1.launch.py` + `verify_flow --flow F1`，跑完自动收尾 |
 | `scripts/m1_detect_offline.py` | 离线识别 `arucotag.png` |
 | `scripts/m1_check_detection.py` | 在线精度校验（稳态悬停后再采样） |
 | `scripts/m1_detector_accuracy.py` | 把 EKF 误差与检测器误差分开度量 |

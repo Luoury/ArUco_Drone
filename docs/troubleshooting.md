@@ -138,3 +138,50 @@
 - `wsl ... bash -lc '...'` 中间那层解析会吃掉 `$VAR` 与 `$(...)`，变量要写进脚本文件。
 - `pkill -f <模式>` / `pgrep -f <模式>` 若模式字面量出现在当前命令行里，会把自己
   那条 shell 一起杀掉（表现为没有任何输出、exit 0）。清理逻辑一律写进脚本。
+
+## 16. 旧暂存覆盖新源码 / 同步脚本把自己写坏
+
+- 无条件 `cp -rf` 同步曾把 M0 末期刚写的 `takeoffTo` 覆盖成旧版本，代码里搜不到、
+  但 `install/` 的编译产物里还能 `nm` 出符号 —— 这是"源码丢了但程序还能跑"的假象。
+  **做法**：只覆盖更新的文件（`cp -u`），要回退时显式 `SYNC_FORCE=1`。
+- `sync.sh` 本身也在被同步目录里，就地 `cp` 覆盖等于边执行边截断，bash 报
+  `unexpected EOF while looking for matching '"'`，**一个文件都不会同步成功**。
+  **做法**：先写临时名再 `mv`（换目录项，正在执行的 bash 仍持旧 inode）。
+
+## 17. `ament_target_dependencies` 链不上 drone_control
+
+- 报 `Target "mission_manager" links to target "drone_control::hover_test" but the
+  target was not found`：`drone_control` 把库和 `hover_test` 装在同一个 export set，
+  `${drone_control_LIBRARIES}` 展开成了可执行目标。
+  **做法**：显式 `target_link_libraries(xxx drone_control::drone_control_lib)`。
+
+## 18. Python 包 `ros2 run` 报 `No executable found`
+
+- 少了 `setup.cfg`：
+
+  ```ini
+  [develop]
+  script_dir=$base/lib/<pkg>
+  [install]
+  install_scripts=$base/lib/<pkg>
+  ```
+
+  否则脚本被装到 `install/<pkg>/bin/` 而不是 `lib/<pkg>/`，`ros2 run` 找不到。
+  改完要 `rm -rf build/<pkg> install/<pkg>` 再编译。
+
+## 19. arm 被 `No connection to the GCS` 拦住
+
+- `WARN [commander] Arming denied` + `Preflight Fail: No connection to the GCS`。
+  根因在 `src/modules/commander/HealthAndArmingChecks/checks/rcAndDataLinkCheck.cpp:75-97`：
+  `gcs_connection_required = (_param_nav_dll_act.get() > 0)`。
+- **做法**：`NAV_DLL_ACT=0`。mavros 侧只有 `/mavros/param/set`，类型是
+  `mavros_msgs/srv/ParamSetV2`（字段 `rcl_interfaces/ParameterValue`），
+  或直接用 `scripts/set_px4_param.py NAV_DLL_ACT 0`。该值会持久化进
+  `build/px4_sitl_default/rootfs/parameters.bson`，重装仿真环境后要重设。
+
+## 20. OFFBOARD 速度模式下 `vz=0` 不保高
+
+- 速度设定点里 `vz=0` 只表示"零爬升率"，机体倾斜加速时仍会掉高（F1 实测水平
+  机动 8 s 掉约 1 m）。
+- 需要定高时用**位置**设定点（位置控制自带高度保持），或用 `takeoffTo` 后的
+  位置悬停；F3 航点飞行按位置设定点实现。

@@ -1,0 +1,23 @@
+# 流程与遥控参数（需求书 §6.3：所有数值参数只在这里改）。
+# mission_manager 读这里的前半段，drone_teleop 读后半段。
+mission_manager:
+  ros__parameters:
+    control_rate: 50.0          # Hz，setpoint 发布频率（需求书：控制 50 Hz）
+    status_rate: 10.0           # Hz，/mission/status 发布频率
+    teleop_timeout: 0.3         # s，超过这个时间没收到新指令就速度清零（松键即停）
+    teleop_max_vel: 0.5         # m/s，遥控水平速度上限（= w/s/a/d 的步长）
+    teleop_max_vert: 0.4        # m/s，遥控垂直速度上限（= r/f 的步长）
+    teleop_max_yaw: 0.5         # rad/s，遥控偏航角速度上限（= q/e 的步长）
+    manual_altitude: 1.5        # m，按 Space/1 进入 MANUAL 时的起飞高度
+    takeoff_tolerance: 0.15     # m，起飞判据容差
+    min_altitude: 0.12          # m，低于这个高度还在下降就强制降落（安全条款）
+    land_timeout: 40.0          # s，等上锁的最长时间
+    flow: F1                    # 当前流程标识，写进 /mission/status.flow
+
+drone_teleop:
+  ros__parameters:
+    publish_rate: 20.0          # Hz，/teleop/cmd 发布频率
+    key_timeout: 0.3            # s，按键超时清零（与 mission_manager 的 teleop_timeout 对齐）
+    vel_xy: 0.5                 # m/s
+    vel_z: 0.4                  # m/s
+    yaw_rate: 0.5               # rad/s

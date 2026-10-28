@@ -6,12 +6,15 @@ set -uo pipefail
 PATTERNS=(
   "mavros_node"
   "parameter_bridge"
+  "gz_sensor_bridge"
   "sim_bringup.launch.py"
+  "flow_f1.launch.py"
   "hover_test"
   "aruco_detector"
   "landing_controller"
   "waypoint_nav"
   "mission_manager"
+  "teleop_node"
   "verify_flow"
 )
 
@@ -24,4 +27,5 @@ done
 
 sleep 1
 echo "[stop_ros] 剩余相关进程："
-ps -eo pid,args | grep -E "mavros_node|parameter_bridge|hover_test" | grep -v grep || echo "  (无)"
+ps -eo pid,args | grep -E "mavros_node|parameter_bridge|gz_sensor_bridge|hover_test|mission_manager" |
+  grep -v grep || echo "  (无)"

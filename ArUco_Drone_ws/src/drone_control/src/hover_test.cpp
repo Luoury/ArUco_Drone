@@ -78,13 +78,13 @@ int main(int argc, char ** argv)
   options.mode_timeout = toSec(mode_timeout);
   options.arm_timeout = toSec(mode_timeout);
 
-  if (!fc.engageOffboard(target, options)) {
-    RCLCPP_ERROR(logger, "OFFBOARD 接管失败");
+  if (!fc.takeoffTo(target, setpoint_rate, altitude_tolerance, toSec(climb_timeout), options)) {
+    RCLCPP_ERROR(logger, "AUTO.TAKEOFF → OFFBOARD 交接失败");
     rclcpp::shutdown();
     return 1;
   }
 
-  // 1) 爬升
+  // 1) 悬停前先把高度补齐（takeoffTo 只到 target.z - tolerance 就算离地）
   const bool climbed = fc.streamUntilPredicate(target, 0.0, setpoint_rate,
     toSec(climb_timeout),
     [&fc, hover_altitude, altitude_tolerance]() {

@@ -34,6 +34,14 @@ struct EnuPose
   double z{0.0};
 };
 
+/// ENU 速度（x 东、y 北、z 上），单位 m/s；yaw_rate 逆时针为正
+struct EnuVelocity
+{
+  double vx{0.0};
+  double vy{0.0};
+  double vz{0.0};
+};
+
 /// OFFBOARD 接管参数（需求书 §5.3 前置顺序）
 struct OffboardOptions
 {
@@ -86,6 +94,26 @@ public:
 
   /// 立即切 AUTO.LAND（安全兜底）
   bool landNow(const EnuPose & hold, double rate_hz, std::chrono::seconds timeout);
+
+  // --- 需求书 §5 的高层原语：takeoff / land / hover / velocity / goto -------
+  /// 从地面起飞到 target.z，离地后按 §5.3 顺序交 OFFBOARD。
+  /// 本机 PX4 v1.17 SITL 在 OFFBOARD 下无法从地面起飞（电机恒怠速），必须走 AUTO.TAKEOFF。
+  bool takeoffTo(const EnuPose & target, double rate_hz, double altitude_tolerance,
+                 std::chrono::seconds climb_timeout, const OffboardOptions & options);
+  /// 起飞到指定高度（水平位置保持当前），climb_timeout 内部固定 30 s
+  bool takeoff(double altitude, const OffboardOptions & options, double altitude_tolerance);
+  /// AUTO.LAND 并等真正上锁
+  bool land(const EnuPose & hold, double rate_hz, std::chrono::seconds timeout);
+  /// 位置保持 duration 秒（position 设定点）
+  bool hover(const EnuPose & target, std::chrono::seconds duration, double rate_hz);
+  /// 位置控制飞往目标点，进入 tolerance 半径即算到达
+  bool gotoPosition(const EnuPose & target, double tolerance, std::chrono::seconds timeout,
+                    double rate_hz);
+  /// 速度控制持续 duration 秒
+  bool velocity(const EnuVelocity & vel, double yaw_rate_enu, std::chrono::seconds duration,
+                double rate_hz);
+  /// 当前偏航角（rad，ENU，逆时针为正）
+  double yaw() const;
 
   // --- 自旋 ---------------------------------------------------------------
   void spinOnce();
