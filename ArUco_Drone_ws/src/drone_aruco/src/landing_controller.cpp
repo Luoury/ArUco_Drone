@@ -346,6 +346,24 @@ private:
       return;
     }
     publishHorizontalTracking(-descend_speed_);
+    // 每 2 s 打一次实测下降速率：F4 第一次跑时 DESCEND 花了 108 s 才降到 0.5 m，
+    // 光看阶段切换日志看不出"指令 -0.30 实际只有 -0.014"，必须打速率才能定位。
+    {
+      const auto now_t = SteadyClock::now();
+      if (!descend_trace_valid_) {
+        descend_trace_valid_ = true;
+        descend_trace_alt_ = alt;
+        descend_trace_time_ = now_t;
+      } else if (std::chrono::duration<double>(now_t - descend_trace_time_).count() >= 2.0) {
+        const double dt = std::chrono::duration<double>(now_t - descend_trace_time_).count();
+        const double rate = (descend_trace_alt_ - alt) / dt;
+        RCLCPP_INFO(get_logger(),
+          "[LANDING] DESCEND alt=%.3f m  指令 vz=%.2f m/s  实测下降 %.3f m/s",
+          alt, -descend_speed_, rate);
+        descend_trace_alt_ = alt;
+        descend_trace_time_ = now_t;
+      }
+    }
     if (alt < final_alt_) {
       RCLCPP_INFO(get_logger(), "[LANDING] 高度 %.3f m < %.2f m，进入 FINAL（vz=%.2f）", alt,
         final_alt_, final_speed_);
@@ -422,6 +440,9 @@ private:
   double descend_speed_{0.30};
   double final_speed_{0.12};
   double lateral_tol_{0.15};
+  bool descend_trace_valid_{false};
+  double descend_trace_alt_{0.0};
+  SteadyClock::time_point descend_trace_time_{};
   double final_tol_{0.08};
   double kp_xy_{0.8};
   double max_vel_xy_{0.6};

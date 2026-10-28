@@ -67,6 +67,12 @@ public:
     takeoff_tolerance_ = declare_parameter<double>("takeoff_tolerance", 0.15);
     takeoff_timeout_ = declare_parameter<double>("takeoff_timeout", 30.0);
     finish_action_ = declare_parameter<std::string>("finish_action", "HOVER");
+    // DONE 之后还要不要继续发设定点？F4 踩过的坑：本节点在 DONE 状态下会一直
+    // `publishPositionSetpoint(hold_)`，而 mission_manager 这时已经把控制权交给
+    // landing_controller（发速度设定点）。两个发布者抢同一个话题，无人机就在
+    // 2.0 m 高度上下摆（实测 DESCEND 速率 0.014 m/s，飞了 108 s 才降到 0.5 m）。
+    // 现在只保留 handover_grace 秒的交接窗口，之后彻底闭嘴。
+    handover_grace_ = declare_parameter<double>("handover_grace", 0.5);
     const std::string state_topic =
       declare_parameter<std::string>("state_topic", "/waypoint/state");
     const std::string progress_topic =
@@ -148,6 +154,10 @@ private:
 
   void enter(const char * next)
   {
+    if (std::string(next) == kStateDone && std::string(state_) != kStateDone) {
+      done_since_ = SteadyClock::now();
+      handover_done_ = false;
+    }
     RCLCPP_INFO(get_logger(), "[WAYPOINT] %s -> %s", state_, next);
     state_ = next;
     state_since_ = SteadyClock::now();
@@ -185,9 +195,17 @@ private:
     } else if (state == kStateGoto || state == kStateHold) {
       stepGoto();
     } else if (state == kStateDone) {
-      // DONE 之后按 finish_action 保持位置（LAND 交给 mission_manager 调度）
-      if (fc_->armed()) {
+      // DONE 之后只保留 handover_grace 秒的交接窗口，之后不再发任何设定点：
+      // 控制权归 mission_manager（HOVER）或它委托的 landing_controller。
+      const double spent = std::chrono::duration<double>(
+        SteadyClock::now() - done_since_).count();
+      if (spent <= handover_grace_ && fc_->armed()) {
         fc_->publishPositionSetpoint(hold_, 0.0);
+      } else if (!handover_done_) {
+        handover_done_ = true;
+        RCLCPP_INFO(get_logger(),
+          "[WAYPOINT] 交接窗口结束（%.1f s），已停止发布设定点，控制权归 mission_manager",
+          handover_grace_);
       }
     }
   }
@@ -326,6 +344,9 @@ private:
   std::vector<double> waypoints_flat_;
   std::vector<drone_control::EnuPose> waypoints_;
   double settle_tol_{0.30};
+  double handover_grace_{0.5};
+  SteadyClock::time_point done_since_{};
+  bool handover_done_{false};
   double steady_hold_{2.0};
   double control_rate_{50.0};
   double goto_timeout_{45.0};

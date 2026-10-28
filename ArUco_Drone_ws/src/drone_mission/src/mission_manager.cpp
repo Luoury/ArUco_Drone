@@ -181,6 +181,18 @@ private:
     has_pending_ = true;
   }
 
+  /// 原地悬停指定秒数（需求书 §5.5：切模式前先悬停稳定，避免两个控制器抢设定点）
+  void hoverFor(double seconds)
+  {
+    const auto until = SteadyClock::now() +
+      std::chrono::milliseconds(static_cast<int>(seconds * 1000.0));
+    while (rclcpp::ok() && SteadyClock::now() < until) {
+      fc_->spinOnce();
+      fc_->publishPositionSetpoint(hold_, 0.0);
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  }
+
   void executePendingCommand()
   {
     if (!has_pending_) {
@@ -263,6 +275,36 @@ private:
       return;
     }
 
+    if (want == "AUTO") {
+      // 全自动链路（需求书 §5.6 F4）：起飞 → 航点（终点 = 码正上方）→ 搜码降落。
+      // 阶段 1 委托 waypoint_nav，阶段 2 委托 landing_controller；
+      // 本节点的职责只有"交接 + 盯着阶段推进"，绝不与它们抢设定点。
+      if (!fc_->armed()) {
+        drone_control::OffboardOptions options;
+        options.rate_hz = control_rate_;
+        if (!fc_->takeoff(manual_altitude_, options, takeoff_tolerance_)) {
+          RCLCPP_ERROR(get_logger(), "起飞失败，保持 %s", mode_.c_str());
+          return;
+        }
+      }
+      hold_ = fc_->localPose();
+      mode_ = "HOVER";
+      state_ = "SWITCHING";
+      hoverFor(mode_switch_hover_);
+      if (!callTrigger("/waypoint/start", waypoint_start_client_, waypoint_start_timeout_)) {
+        RCLCPP_ERROR(get_logger(), "AUTO 阶段 1/2 启动失败（waypoint_nav 没起）");
+        mode_ = "HOVER";
+        state_ = "HOVER";
+        return;
+      }
+      auto_phase_ = "WAYPOINT";
+      auto_begin_ = SteadyClock::now();
+      mode_ = "AUTO";
+      state_ = "AUTO_WAYPOINT";
+      RCLCPP_INFO(get_logger(), "AUTO 阶段 1/2：航点导航（终点 = 码正上方）");
+      return;
+    }
+
     if (want == "ARUCO_LAND") {
       // 需求书 §5.5：先停当前输出 → 置 HOVER → 等 0.5 s → 再交给 landing_controller，
       // 避免两个节点同时发 setpoint 打架。
@@ -300,6 +342,12 @@ private:
     if (want == "IDLE" || want == "HOVER" || want == "MANUAL" || want == "LAND") {
       // 从航点模式切出去时先叫停 waypoint_nav，否则它会继续发航点设定点
       if (mode_ == "WAYPOINT") {
+        callTrigger("/waypoint/stop", waypoint_stop_client_, waypoint_start_timeout_);
+        waypoint_state_ = "IDLE";
+      }
+      // 从 AUTO 切出去时，两个被委托的节点都要叫停
+      if (mode_ == "AUTO") {
+        auto_phase_.clear();
         callTrigger("/waypoint/stop", waypoint_stop_client_, waypoint_start_timeout_);
         waypoint_state_ = "IDLE";
       }
@@ -348,6 +396,12 @@ private:
 
   void publishControl()
   {
+    // AUTO：两个阶段都委托给别人，本节点只盯着阶段推进，一个字都不许发
+    if (mode_ == "AUTO") {
+      monitorAuto();
+      return;
+    }
+
     // ARUCO_LAND：设定点由 landing_controller 独占，本节点必须停止发指令
     // （否则两个发布者抢 /mavros/setpoint_raw/local，无人机会抖）
     if (mode_ == "ARUCO_LAND") {
@@ -414,6 +468,59 @@ private:
     }
 
     // IDLE / LAND：不发设定点，交给 PX4 自己的模式
+  }
+
+  /// 监视 AUTO 的两个阶段：航点跑完 → 交给视觉降落 → 落地上锁 → 收工
+  void monitorAuto()
+  {
+    const double spent = std::chrono::duration<double>(
+      SteadyClock::now() - auto_begin_).count();
+    if (spent > auto_timeout_) {
+      RCLCPP_WARN(get_logger(), "AUTO 超过兜底超时 %.0f s（此时阶段 %s），强制降落",
+        auto_timeout_, auto_phase_.c_str());
+      auto_phase_.clear();
+      mode_ = "LAND";
+      state_ = "AUTO_TIMEOUT";
+      fc_->land(fc_->localPose(), control_rate_,
+        std::chrono::seconds(static_cast<int>(land_timeout_)));
+      mode_ = "IDLE";
+      state_ = "LANDED";
+      return;
+    }
+
+    if (auto_phase_ == "WAYPOINT") {
+      if (waypoint_state_ != "DONE") {
+        return;
+      }
+      waypoint_state_ = "IDLE";
+      RCLCPP_INFO(get_logger(), "AUTO 阶段 1/2 完成：航点全部到达（%.1f s）", spent);
+      // 必须显式叫停 waypoint_nav：它在 DONE 状态下仍会发一会儿位置设定点，
+      // 与 landing_controller 的速度设定点抢同一个话题（F4 第一次跑就栽在这里）。
+      callTrigger("/waypoint/stop", waypoint_stop_client_, waypoint_start_timeout_);
+      hold_ = fc_->localPose();
+      hoverFor(mode_switch_hover_);
+      if (!callTrigger("/aruco/landing/start", landing_start_client_,
+        landing_start_timeout_))
+      {
+        RCLCPP_ERROR(get_logger(), "AUTO 阶段 2/2 启动失败（landing_controller 没起）→ 悬停");
+        auto_phase_.clear();
+        mode_ = "HOVER";
+        state_ = "AUTO_ABORT";
+        return;
+      }
+      auto_phase_ = "LAND";
+      state_ = "AUTO_LAND";
+      RCLCPP_INFO(get_logger(), "AUTO 阶段 2/2：视觉降落已接管");
+      return;
+    }
+
+    if (auto_phase_ == "LAND" && landing_state_ == "DONE") {
+      landing_state_ = "IDLE";
+      auto_phase_.clear();
+      mode_ = "IDLE";
+      state_ = "AUTO_DONE";
+      RCLCPP_INFO(get_logger(), "AUTO 全流程完成：已落地并上锁（总耗时 %.1f s）", spent);
+    }
   }
 
   /// 监视 landing_controller：它落地上锁后（DONE）本节点收回控制权
@@ -537,6 +644,9 @@ private:
 
   // 航点链路（M4）
   double waypoint_start_timeout_{5.0};
+  double auto_timeout_{120.0};      // s，AUTO 全链路兜底超时（超了就强制降落）
+  std::string auto_phase_;          // AUTO 内部阶段："WAYPOINT" / "LAND"
+  SteadyClock::time_point auto_begin_{};
   std::string waypoint_state_{"IDLE"};
   int waypoint_index_{0};
   int waypoint_total_{0};

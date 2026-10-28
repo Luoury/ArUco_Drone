@@ -27,6 +27,9 @@ mission_manager:
     waypoint_progress_topic: /waypoint/progress  # Float64MultiArray：[序号, 总数, 误差, 稳定秒数]
     waypoint_start_timeout: 5.0  # s，调用 /waypoint/start 的超时
 
+    # ---- AUTO 全链路（M5 起）：一条指令串起"航点 → 视觉降落" ----
+    auto_timeout: 120.0         # s，AUTO 兜底超时（超了强制降落，防止卡在半空）
+
 drone_teleop:
   ros__parameters:
     publish_rate: 20.0          # Hz，/teleop/cmd 发布频率
@@ -54,3 +57,6 @@ verify_flow:
     f3_flow_timeout: 180.0      # s，F3 全程时间上限
     f3_settle_hold: 2.0         # s，与 waypoints.yaml 的 steady_hold 对齐（判定"已稳定"的口径）
     f3_waypoint_count: 3        # 个，F3 要求验收的航点数
+    f4_lateral_max: 0.25        # m，F4 最终水平误差上限
+    f4_altitude_max: 0.25       # m，F4 最终高度上限
+    f4_flow_timeout: 180.0      # s，F4 全程时间上限（要 ≥ mission_manager 的 auto_timeout）

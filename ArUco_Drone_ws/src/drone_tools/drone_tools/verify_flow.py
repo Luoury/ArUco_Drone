@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""流程自动验收（需求书 §7）。当前实现 F1/F2/F3，后续里程碑继续加 F4~F5。
+"""流程自动验收（需求书 §7）。当前实现 F1/F2/F3/F4，后续里程碑继续加 F5。
 
 F1（纯手动）：起飞 → 飞一圈 → 降落。
 判据：起飞高度 > 1.2 m；最终高度 < 0.2 m；全程无 crash。
@@ -45,6 +45,7 @@ class Verifier(Node):
         self.status_timeout = float(p('status_timeout', 30.0).value)
 
         self.status = None
+        self.status_states = []
         self.max_altitude = 0.0
         self.min_altitude_in_flight = float('inf')
         self.crashed = False
@@ -78,6 +79,11 @@ class Verifier(Node):
         self.waypoint_error = -1.0
         self.waypoint_dwell = 0.0
         self.waypoint_settled = {}
+
+        # F4 专用参数（全自动链路：一条 AUTO 指令跑完全程）
+        self.f4_lateral_max = float(p('f4_lateral_max', 0.25).value)
+        self.f4_altitude_max = float(p('f4_altitude_max', 0.25).value)
+        self.f4_flow_timeout = float(p('f4_flow_timeout', 180.0).value)
 
         # F2 专用参数（默认值见 drone_bringup/config/flows.yaml 的 verify_flow 段）
         self.f2_lateral_max = float(p('f2_lateral_max', 0.25).value)
@@ -156,6 +162,9 @@ class Verifier(Node):
     # ---------- 状态跟踪 ----------
 
     def on_status(self, msg):
+        # 记下 state 的变化序列，F4 要看"AUTO_WAYPOINT → AUTO_LAND → AUTO_DONE"是否清晰
+        if not self.status_states or self.status_states[-1] != msg.state:
+            self.status_states.append(msg.state)
         self.status = msg
         if msg.altitude > self.max_altitude:
             self.max_altitude = msg.altitude
@@ -423,6 +432,73 @@ def run_f3(node):
     return passed
 
 
+def run_f4(node):
+    """F4：全自动链路（需求书 §5.6 F4 / M5）。
+
+    一条 AUTO 指令：起飞 → 3 个航点（终点 = 码正上方）→ 搜码 → 对准 → 降落上锁。
+    判据：全程零人工输入；最终水平误差 ≤ 0.25 m；最终高度 ≤ 0.25 m；≤ 180 s。
+    """
+    node.say('开始：F4 全自动（AUTO = 起飞 → 航点 → 回码上方 → 搜码降落，全程不干预）')
+    t_begin = time.monotonic()
+
+    ok, waited = node.wait_until(lambda: node.status is not None, node.status_timeout,
+                                 label='/mission/status')
+    if not ok:
+        node.say('FAIL 原因：收不到 /mission/status（mission_manager 没起？）')
+        return False
+    node.say(f'mission_manager 在线（{waited:.1f} s），当前 mode = {node.status.mode}')
+
+    # 唯一的一条指令：此后不再发任何遥控/模式请求
+    node.say("请求模式 AUTO（这是全程唯一一条指令）")
+    node.request_mode('AUTO')
+    node.tracking_flight = True
+
+    ok, waited = node.wait_until(
+        lambda: node.status is not None and node.status.state == 'AUTO_DONE',
+        node.f4_flow_timeout, label='AUTO 全流程完成')
+    elapsed = time.monotonic() - t_begin
+    node.tracking_flight = False
+
+    node.say(f'状态序列 = {" → ".join(node.status_states)}')
+    node.say(f'航点阶段 = {" → ".join(node.waypoint_states) or "(空)"}；'
+             f'降落阶段 = {" → ".join(node.landing_states) or "(空)"}')
+
+    final_lateral = node.marker_lateral
+    final_altitude = node.altitude()
+    marker_detected = node.marker_frames > 0
+    node.say(f'marker_detected = {"yes" if marker_detected else "no"}'
+             f'（收到 {node.marker_frames} 帧检测，最后一帧水平误差 {final_lateral:.2f} m）')
+    node.say(f'landed = {"yes" if ok else "no"}（{waited:.1f} s），'
+             f'final_altitude = {final_altitude:.2f} m，elapsed = {elapsed:.1f} s')
+    if not ok:
+        node.say(f'FAIL 原因：AUTO 未在 {node.f4_flow_timeout:.0f} s 内走到 AUTO_DONE'
+                 f'（当前 state = {node.status.state if node.status else "?"}）')
+        return False
+
+    if final_lateral < 0.0:
+        node.say('FAIL 原因：全程从未测到「码相对无人机的水平误差」，不能判合格')
+        return False
+
+    checks = [
+        ('marker_detected', 1.0 if marker_detected else 0.0, '==', 1.0),
+        ('final_lateral', final_lateral, '<=', node.f4_lateral_max),
+        ('final_altitude', final_altitude, '<=', node.f4_altitude_max),
+        ('elapsed', elapsed, '<=', node.f4_flow_timeout),
+    ]
+    passed = True
+    for name, value, op, limit in checks:
+        good = (value == limit) if op == '==' else (value <= limit)
+        unit = 's' if name == 'elapsed' else 'm'
+        if name == 'marker_detected':
+            node.say(f'{name} = {"yes" if value else "no"}（判据 == yes）→ '
+                     f'{"ok" if good else "超出"}')
+        else:
+            node.say(f'{name} = {value:.2f} {unit}（判据 {op} {limit:.2f}）→ '
+                     f'{"ok" if good else "超出"}')
+        passed = passed and good
+    return passed
+
+
 def _vec(x, y, z):
     from geometry_msgs.msg import Vector3
     return Vector3(x=float(x), y=float(y), z=float(z))
@@ -442,8 +518,10 @@ def main(argv=None):
             passed = run_f2(node)
         elif args.flow.upper() == 'F3':
             passed = run_f3(node)
+        elif args.flow.upper() == 'F4':
+            passed = run_f4(node)
         else:
-            node.say(f'FAIL 原因：流程 {args.flow} 尚未实现（当前支持 F1/F2/F3）')
+            node.say(f'FAIL 原因：流程 {args.flow} 尚未实现（当前支持 F1/F2/F3/F4）')
             passed = False
     except KeyboardInterrupt:
         node.request_mode('LAND')

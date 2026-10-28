@@ -378,7 +378,104 @@ real_time_factor: 0.92995854477297035
 
 ---
 
-## 6. 当前状态与下一步
+## 6. M5 — 全自主链路（AUTO）+ F4 流程
+
+### 6.1 交付物
+
+| 文件 | 说明 |
+| --- | --- |
+| `drone_mission/src/mission_manager.cpp` | 新增 `AUTO` 两阶段委托：`WAYPOINT`（阶段 1）→ `LAND`（阶段 2），全程本节点不发任何 setpoint；`auto_timeout` 120 s 兜底 |
+| `drone_bringup/launch/flow_f4.launch.py` | 一条命令拉起 sim_bringup + aruco_detect + waypoint_nav + landing_controller + mission_manager(F4) |
+| `drone_tools/drone_tools/verify_flow.py` | `run_f4()`：只发一条 `AUTO` 模式请求，其余全靠系统自己跑；记录 `/mission/status.state` 变化序列 |
+| `drone_bringup/config/flows.yaml` | `auto_timeout: 120.0`、`f4_lateral_max: 0.25`、`f4_altitude_max: 0.25`、`f4_flow_timeout: 180.0` |
+| `scripts/dev_run_f4.sh` | 起 SITL → launch F4 → 等四个节点就绪 → 跑验收 → 收尾 |
+| `scripts/m5_probe.py` | 临时探针：1 Hz 记录 `/mavros/setpoint_raw/local` 的 `type_mask / position.z / velocity.z` + 实际高度 |
+
+AUTO 的调度顺序（严格按 `mission_manager` 的 `monitorAuto()`）：
+
+```
+AUTO 请求 → 未解锁则 AUTO.TAKEOFF 起 1.5 m → 悬停 0.5 s（§5.5 模式切换纪律）
+        → /waypoint/start → 阶段 WAYPOINT（本节点沉默，waypoint_nav 独占设定点）
+        → /waypoint/state == DONE → /waypoint/stop → 悬停 0.5 s
+        → /aruco/landing/start → 阶段 LAND（本节点沉默，landing_controller 独占设定点）
+        → /aruco/landing/state == DONE → mode = IDLE、state = AUTO_DONE
+```
+
+### 6.2 F4 验收结果（真实输出）
+
+```
+=== [3/3] 跑 verify_flow F4 ===
+[FLOW F4] mission_manager 在线（0.1 s），当前 mode = IDLE
+[FLOW F4] 请求模式 AUTO（这是全程唯一一条指令）
+[FLOW F4] 航点阶段 → GOTO → HOLD → GOTO → HOLD → GOTO → HOLD → DONE → IDLE
+[FLOW F4] 航点 1 稳态误差 = 0.190 m
+[FLOW F4] 航点 2 稳态误差 = 0.127 m
+[FLOW F4] 航点 3 稳态误差 = 0.116 m
+[FLOW F4] landing 阶段 → ALIGN → DESCEND → FINAL → SEARCH → ALIGN → DESCEND → FINAL → DONE
+[FLOW F4] 状态序列 = IDLE → AUTO_WAYPOINT → AUTO_LAND → AUTO_DONE
+[FLOW F4] marker_detected = yes（收到 381 帧检测，最后一帧水平误差 0.04 m）
+[FLOW F4] landed = yes（42.4 s），final_altitude = -0.03 m，elapsed = 42.5 s
+
+[FLOW F4] marker_detected = yes（判据 == yes）→ ok
+[FLOW F4] final_lateral = 0.04 m（判据 <= 0.25）→ ok
+[FLOW F4] final_altitude = -0.03 m（判据 <= 0.25）→ ok
+[FLOW F4] elapsed = 42.50 s（判据 <= 180.00）→ ok
+[FLOW F4] RESULT: PASS
+```
+
+修复后 `m5_probe.py` 的同一段（landing 阶段，`4039` = 速度掩码，`4088` = 位置掩码）：
+
+```
+ 30.3   0.880   mask=4039   vz=-0.300      ← DESCEND，实际下降
+ 31.3   0.588   mask=4039   vz=-0.300
+ 32.3   0.395   mask=4039   vz=-0.120      ← FINAL
+ 33.3   0.290   mask=4039   vz=-0.120
+ 34.4   0.184   mask=4039   vz=-0.120
+ 35.4   0.158   mask=4039   vz= 0.000      ← 贴地，TOUCHDOWN
+ 38.4   0.123   mask=4088   pz= 0.123      ← 交由 mission_manager 做最后的位置收尾
+ 39.4  -0.014   mask=4088   pz=-0.015
+```
+
+设定点不再来回打摆：位置设定点序列（`[0,0,2.0]`，最后一个航点）在交接窗口后彻底消失。
+
+### 6.3 判据对照（需求书 §5.6 F4）
+
+| 指标 | 判据 | 实测 | 结论 |
+| --- | --- | --- | --- |
+| 全程人工输入 | 零 | 1 条 `AUTO` 模式请求（由验收脚本发，等价于按 `4`） | ✅ |
+| 最终水平误差 | ≤0.25 m | 0.04 m | ✅ |
+| 最终高度 | ≤0.25 m | -0.03 m | ✅ |
+| 全程耗时 | ≤180 s | 42.5 s | ✅ |
+| 模式切换日志 | 清晰 | `AUTO_WAYPOINT → AUTO_LAND → AUTO_DONE` 三段齐全 | ✅ |
+
+### 6.4 决定性的坑
+
+**坑 T：两个节点同时抢 `/mavros/setpoint_raw/local`（本阶段最贵的一次排查）**
+F4 前三次都以同样的方式失败：链路、检测、状态机全对，就是最后一段降不下来 —— DESCEND 从 2.5 m 到 0.5 m 花了 **108 s**（指令 -0.30 m/s，实际 0.014 m/s），最后顶到 `auto_timeout` 120 s 被强制 LAND，`state` 停在 `LANDED` 而不是 `AUTO_DONE`。
+
+一开始怀疑是检测延迟、PnP 噪声、速度限幅，都不是。加了 `m5_probe.py` 直接听设定点，1 秒就看见真相：
+
+```
+ 61.6   1.932   mask=4039  vz=-0.300     ← landing_controller 在降
+ 62.6   1.894   mask=4088  pz= 2.000     ← waypoint_nav 还在把它拉回 2 m
+```
+
+`4088 = 0b0000111111111000`（位置掩码）与 `4039 = 0b0000111111000111`（速度掩码）以 8 s 周期交替，高度就在 0.8~1.9 m 之间画正弦 —— 典型的两个发布者互相打架的极限环。
+
+根因：`waypoint_nav` 在 `kStateDone` 分支里无条件 `publishPositionSetpoint(hold_)`，而 `hold_` 正是最后一个航点 `[0, 0, 2.0]`；mission_manager 这时已经把控制权交给了 `landing_controller`（发速度设定点）。F3 里完全看不出来，因为那时 mission_manager 进 HOVER 发的也是同一个点，两个发布者"意见一致"。
+
+修法（两处，缺一不可）：
+1. `waypoint_nav` 增加 `handover_grace`(0.5 s)：DONE 之后只保留 0.5 s 交接窗口，然后打日志「已停止发布设定点，控制权归 mission_manager」并彻底闭嘴；
+2. `mission_manager` 的 `monitorAuto()` 从航点阶段切到降落阶段前**显式** `callTrigger("/waypoint/stop")`，不依赖宽限期。
+
+教训：**OFFBOARD 阶段"谁在发设定点"必须是全局唯一且可验证的**。任何"我跑完了但继续维持位置"的便利写法，都会在下一次控制权交接时变成隐形冲突。诊断手段首选"直接听话题"（本项目的 `m5_probe.py`），而不是继续加日志猜。
+
+**坑 U：`sync.sh` 用 mtime 判断文件新旧，把改过的脚本静默跳过**
+`/mnt/c` 是 DrvFs，mtime 有秒级/时区误差；`cp -u` 的 `-nt` 判断因此把刚改过的 `dev_run_f4.sh` 判成"更旧"而跳过同步，结果 F4 白跑了一轮（探针根本没启动、`/tmp/f4_probe.log` 不存在，日志里也看不出异常）。→ 改成 `cmp -s` **比内容**，`src/` 用 `rsync -a --checksum`；只有 `SYNC_FORCE=1` 才无条件覆盖。"同步成功"这句话在跨文件系统时必须由内容比较来背书。
+
+---
+
+## 7. 当前状态与下一步
 
 | 里程碑 | 状态 |
 | --- | --- |
@@ -387,7 +484,7 @@ real_time_factor: 0.92995854477297035
 | M2 飞控封装 + 键盘 + F1 | ✅ 完成（F1 PASS） |
 | M3 视觉伺服降落 + F2 | ✅ 完成（F2 PASS，落点水平误差 0.01 m） |
 | M4 航点导航 + F3 | ✅ 完成（F3 PASS，三点稳态误差 0.158/0.075/0.102 m） |
-| M5 全自主 + F4 | ⏳ 下一步 |
-| M6 异常处理 + F5 | ⏳ 未开始 |
+| M5 全自主 + F4 | ✅ 完成（F4 PASS，42.5 s，落点水平误差 0.04 m） |
+| M6 异常处理 + F5 | ⏳ 下一步 |
 
-代码提交：`712d516`(M0) → `7e62583`(需求书修正) → `8b52c1e`(M1) → `7bb6e6b`(M2) → `0223ee3`(M3) → M4 见 `git log`。
+代码提交：`712d516`(M0) → `7e62583`(需求书修正) → `8b52c1e`(M1) → `7bb6e6b`(M2) → `0223ee3`(M3) → `a329c60`(M4) → `c4c1190`(M4 收尾) → M5 见 `git log`。

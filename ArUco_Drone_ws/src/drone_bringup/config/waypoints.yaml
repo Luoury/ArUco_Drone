@@ -25,6 +25,7 @@ waypoint_nav:
     takeoff_tolerance: 0.15
     takeoff_timeout: 30.0
     # 跑完后的行为：HOVER 就地悬停（降落由 mission_manager 调度），可选 LAND
-    finish_action: HOVER
+    finish_action: HOVER           # 跑完后原地悬停，由 mission_manager 接管
+    handover_grace: 0.5            # s，DONE 之后还继续发设定点的交接窗口（之后彻底闭嘴）
     state_topic: /waypoint/state
     progress_topic: /waypoint/progress

@@ -266,3 +266,32 @@
   于是类定义被提前闭合，报错行号全在下游。
 - **教训**：改带 `{` 的行，替换串必须写全括号；看到成片的 `not declared in this scope`
   先往"括号错位"上想，别跟着下游报错跑。
+
+---
+
+### 29. 无人机在某个高度上下摆，设定点被两个节点抢
+
+**现象**：降落/悬停时高度以 ~8 s 为周期在 0.8~1.9 m 之间来回走，指令下降但实际几乎不降。
+
+**判定**：直接听设定点（本仓库 `scripts/m5_probe.py`，1 Hz 打印 `type_mask / position.z / velocity.z`）：
+
+```
+mask=4039  vz=-0.300   ← 速度掩码 0b0000111111000111
+mask=4088  pz= 2.000   ← 位置掩码 0b0000111111111000
+```
+
+两种掩码交替出现 = 两个发布者。`ros2 topic info /mavros/setpoint_raw/local -v --no-daemon` 看发布者数量。
+
+**原因**：`waypoint_nav` 在 `kStateDone` 状态仍无条件发 `publishPositionSetpoint(hold_)`，与接管后的 `landing_controller` 抢话题。
+
+**修法**：① `waypoint_nav` 的 `handover_grace`（0.5 s）之后再不发设定点；② `mission_manager` 每次交接控制权前显式 `callTrigger("/waypoint/stop")`。原则：**OFFBOARD 期间发设定点的节点必须全局唯一**。
+
+### 30. `sync.sh` 报"完成"但文件没更新
+
+**现象**：改了 Windows 暂存目录里的脚本，`bash scripts/sync.sh` 打印"完成"，但 WSL 里仍是旧版本（某次因此白跑一轮 F4）。
+
+**原因**：`/mnt/c` 是 DrvFs，mtime 有秒级/时区误差，`cp -u` / `-nt` 判断把它判成"更旧"而跳过。
+
+**修法**：同步脚本改用 `cmp -s` 比内容、`rsync -a --checksum` 同步源码目录；`SYNC_FORCE=1` 才无条件覆盖。跨文件系统的"已同步"必须由内容比较背书。
+
+**验证**：`grep -c 新加的字符串 <目标文件>` 应为非零。
