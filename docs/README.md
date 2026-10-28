@@ -37,7 +37,8 @@ ros2 run drone_control hover_test
 
 一键联调（含健康检查与验收）：
 `bash scripts/dev_run_hover.sh`（M0）、`bash scripts/dev_run_aruco.sh`（M1）、
-`bash scripts/dev_run_f1.sh`（M2 的 F1 流程）、`bash scripts/dev_run_f2.sh`（M3 的 F2 流程），
+`bash scripts/dev_run_f1.sh`（M2 的 F1 流程）、`bash scripts/dev_run_f2.sh`（M3 的 F2 流程）、
+`bash scripts/dev_run_f3.sh`（M4 的 F3 流程），
 每个都自动跑完并打印 `[FLOW Fx] RESULT:`。
 
 人工试飞 F2（键盘按下 `2` 交给视觉降落；`w/a/s/d/r/f/q/e` 手动飞）：
@@ -95,7 +96,10 @@ ros2 launch drone_bringup flow_f1.launch.py start_teleop:=true
   接管，`IDLE → ALIGN → DESCEND → FINAL`，`landed = yes`，
   `final_lateral = 0.01 m`、`final_altitude = -0.01 m`、`elapsed = 31.1 s`
   （判据 0.25 / 0.25 / 150）→ `[FLOW F2] RESULT: PASS`。
-- M4 航点导航 + F3：下一步。
+- **M4 航点导航 + F3：PASS**。`verify_flow --flow F3` 实测：只发一条 `WAYPOINT` 模式指令，
+  三点稳态误差 `0.158 / 0.075 / 0.102 m`（判据 ≤0.35），`elapsed = 30.6 s`（判据 ≤180），
+  落地 `final_altitude = -0.04 m` → `[FLOW F3] RESULT: PASS`。
+- M5 全自主 + F4：下一步。
 
 ## 脚本清单
 
@@ -114,6 +118,7 @@ ros2 launch drone_bringup flow_f1.launch.py start_teleop:=true
 | `scripts/dev_run_aruco.sh` | M1 一键联调 + 验收（`ARUCO_POSE_TOPIC` 可切位姿源） |
 | `scripts/dev_run_f1.sh` | M2：起 SITL + `flow_f1.launch.py` + `verify_flow --flow F1`，跑完自动收尾 |
 | `scripts/dev_run_f2.sh` | M3：起 SITL + `flow_f2.launch.py` + `verify_flow --flow F2` |
+| `scripts/dev_run_f3.sh` | M4：起 SITL + `flow_f3.launch.py` + `verify_flow --flow F3` |
 | `scripts/trace_alt.py [秒]` | 10 Hz 录高度+模式到 CSV，判断"真掉高"还是"读数跳变" |
 | `scripts/dev_manual_probe.sh` | 起 F2 链路 → 发 `/mission/mode=MANUAL` → 录高度 |
 | `scripts/dev_run_det_probe.sh` / `dev_det_probe.py` | 飞离码上空后逐帧比对"真实偏移 vs 估计偏移"（验相机轴系） |

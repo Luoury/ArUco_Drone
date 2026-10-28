@@ -225,12 +225,15 @@
 - **做法**：把清理/过滤写成脚本文件；必须在命令行里提及时用 `m[a]nager` 这类
   正则拆分写法绕过自匹配。
 
-## 25. 用 Python 写 `.sh` 会变成 CRLF，bash 报 `$'': command not found`
+## 25. 用 Python 写 `.sh` 会变成 CRLF，bash 报 `$'
+': command not found`
 
 - Windows 上 `Path.write_text()` 默认把 `
 ` 翻成 `
 `，脚本一执行就报
-  `set: pipefail: invalid option name` / `$'': command not found`。
+  `set: pipefail
+: invalid option name` / `$'
+': command not found`。
 - **做法**：写脚本一律 `write_text(..., newline='
 ')`（或写完后
   `bytes.replace(b'
@@ -243,3 +246,23 @@
   "明明发了 `/mission/mode`，`mission_manager` 却说没收到"。
 - **做法**：建好发布者后先 `rclpy.spin_once()` 空转 0.5~1 s，再连续发布若干次
   （见 `scripts/dev_manual_probe.sh`）。
+
+## 27. `/waypoint/progress` 的 dwell 永远到不了阈值（验收采不到稳态误差）
+
+- **现象**：F3 状态机 `GOTO → HOLD → DONE` 一切正常、29.4 s 落地，但验收脚本三个航点全报
+  `waypoint_N_error = (未收到稳态数据)` → `RESULT: FAIL`。
+- **原因**：`waypoint_nav` 里 `dwell_` 在"稳定计时达标"的**同一拍**被清零并推进下一个航点，
+  而 progress 只有 10 Hz —— 订阅端永远看不到 `dwell >= steady_hold` 的样本。
+- **修法**：`/waypoint/progress` 扩成 6 个元素，`[4]` = 最近完成的航点号、`[5]` = 该航点完成时的
+  稳态误差；验收脚本按"完成的航点号"取值。**不要**改成"取 dwell 最大时的误差"——那是把测量缺陷
+  当成结论。
+- **判定命令**：`ros2 topic echo /waypoint/progress --once --no-daemon`，看 `data[3]` 是否曾经 ≥ 2.0。
+
+## 28. 字符串替换 `if (...) {` 时漏掉开括号
+
+- **现象**：编译报 `mission_manager.cpp:299:5: error: expected unqualified-id before 'if'`，
+  紧接着一大片 `expected ';' after class definition` 与几十条 `'xxx' was not declared in this scope`。
+- **原因**：用脚本把 `if (!callLanding(...)) {` 换成新写法时，替换串漏了行尾的 `{`，
+  于是类定义被提前闭合，报错行号全在下游。
+- **教训**：改带 `{` 的行，替换串必须写全括号；看到成片的 `not declared in this scope`
+  先往"括号错位"上想，别跟着下游报错跑。

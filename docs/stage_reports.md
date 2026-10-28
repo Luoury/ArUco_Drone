@@ -1,4 +1,4 @@
-# 阶段成果报告（M0 / M1 / M2 / M3）
+# 阶段成果报告（M0 / M1 / M2 / M3 / M4）
 
 > 本文按里程碑逐阶段记录"做了什么、实测到什么、踩了哪些坑"。
 > 数据全部来自本机真实终端输出（WSL2 Ubuntu 22.04 + PX4 v1.17 SITL + Gazebo Harmonic + ROS 2 Humble），
@@ -308,11 +308,77 @@ real_time_factor: 0.92995854477297035
 **坑 Q：`align_abort_tol` 太小导致 ALIGN ↔ SEARCH 死循环**
 0.60 m 的"发散保护"阈值比"飞离码上空"后的正常误差（1~2 m）还小，一进 ALIGN 就被判发散。→ 提到 2.50 m，明确它只兜解算发散；远距离接近交给 ALIGN 的比例速度（`kp_xy * err`，限幅 `max_vel_xy`）。
 
-另外还踩到：`stop_ros.sh` 的模式串出现在调用命令行里会把自己 kill 掉（"无输出、exit 0"）；Python 在 Windows 上写 `.sh` 会带 CRLF（`$'': command not found`）；`ros2 topic pub --once` 刚建发布者就发会丢（要先空转完成 DDS 匹配）。
+另外还踩到：`stop_ros.sh` 的模式串出现在调用命令行里会把自己 kill 掉（"无输出、exit 0"）；Python 在 Windows 上写 `.sh` 会带 CRLF（`$'
+': command not found`）；`ros2 topic pub --once` 刚建发布者就发会丢（要先空转完成 DDS 匹配）。
 
 ---
 
-## 5. 当前状态与下一步
+## 5. M4 — 航点导航 + F3 流程
+
+### 5.1 交付物
+
+| 文件 | 作用 |
+| --- | --- |
+| `drone_nav/src/waypoint_nav.cpp` | 航点导航节点：`/waypoint/start`、`/waypoint/stop`（Trigger），10 Hz 发布 `/waypoint/state` 与 `/waypoint/progress` |
+| `drone_bringup/config/waypoints.yaml` | 航点真值（`[3,0,2] → [3,3,2] → [0,0,2]`），每个点带注释说明设计意图 |
+| `drone_bringup/launch/flow_f3.launch.py` | `sim_bringup` + `waypoint_nav` + `mission_manager(flow=F3)` |
+| `drone_mission`（改） | 新增 `WAYPOINT` 模式委托：§5.5 先悬停 0.5 s 再 `/waypoint/start`，期间本节点**不发任何 setpoint** |
+| `drone_tools/drone_tools/verify_flow.py`（改） | 新增 `run_f3()`：一条模式指令跑完全程，逐点校验稳态误差 |
+| `scripts/dev_run_f3.sh` | 一键：起 SITL（含 IMU 健康检查）→ 起 F3 launch → 跑验收 → 收尾 |
+
+航点状态机：`IDLE → TAKEOFF → GOTO ⇄ HOLD → DONE`。每个航点必须"误差 ≤ `settle_tol`(0.30 m) 且**连续稳定 2 s**"才算到位，稳态误差取稳定计时结束那一拍的实测值。
+
+### 5.2 F3 验收结果（真实输出）
+
+```
+[FLOW F3] 开始：F3 纯自主航点（起飞 → 3 个航点 → 回码上方悬停 → 降落）
+[FLOW F3] mission_manager 在线（0.0 s），当前 mode = IDLE
+[FLOW F3] 请求模式 WAYPOINT（此后不再发任何遥控指令）
+[FLOW F3] 航点阶段 = IDLE → GOTO → HOLD → GOTO → HOLD → GOTO → HOLD → DONE
+[FLOW F3] 航点 1 稳态误差 = 0.158 m
+[FLOW F3] 航点 2 稳态误差 = 0.075 m
+[FLOW F3] 航点 3 稳态误差 = 0.102 m
+[FLOW F3] landed = yes（7.8 s），final_altitude = -0.04 m，elapsed = 30.6 s
+[FLOW F3] waypoint_1_error = 0.158 m（判据 <= 0.35）→ ok
+[FLOW F3] waypoint_2_error = 0.075 m（判据 <= 0.35）→ ok
+[FLOW F3] waypoint_3_error = 0.102 m（判据 <= 0.35）→ ok
+[FLOW F3] elapsed = 30.60 s（判据 <= 180.00）→ ok
+[FLOW F3] final_altitude = -0.04 m（判据 <= 0.20）→ ok
+[FLOW F3] RESULT: PASS
+```
+
+节点侧日志（对应"到位 → 稳定计时 → 记录"三段）：
+
+```
+[WAYPOINT] IDLE -> TAKEOFF / TAKEOFF -> GOTO
+[WAYPOINT] 航点 1/3 到位（误差 0.294 m），开始稳定计时
+[WAYPOINT] 航点 1/3 稳态误差 0.158 m（稳定 2.0 s）
+[WAYPOINT] 航点 2/3 稳态误差 0.075 m（稳定 2.0 s）
+[WAYPOINT] 航点 3/3 稳态误差 0.102 m（稳定 2.0 s）
+[WAYPOINT] 全部 3 个航点完成
+```
+
+### 5.3 判据对照（需求书 §5.6 F3）
+
+| 判据 | 要求 | 实测 | 结论 |
+| --- | --- | --- | --- |
+| 每个航点稳态误差 | ≤ 0.35 m | 0.158 / 0.075 / 0.102 m | 通过 |
+| 全程时间 | ≤ 180 s | 30.6 s | 通过 |
+| 零人工输入 | 只发一条模式指令 | 只发了 `WAYPOINT` | 通过 |
+| 落地 | 上锁 | `final_altitude = -0.04 m` | 通过 |
+
+### 5.4 两个坑
+
+**坑 R：稳态误差抓不到，"全部航点完成"却判 FAIL**
+第一次跑 F3，状态机跑得漂亮（`GOTO→HOLD→DONE`、29.4 s 落地），但三个航点全报"未收到稳态数据"。原因：`waypoint_nav` 的 `dwell_` 在"稳定 2 s 达标"那一拍**同时**被清零并推进下一个航点，10 Hz 的 progress 里永远看不到 `dwell >= 2.0` 的样本，验收脚本自然一次也没采到。
+→ 修法不是放宽判据，而是让 `waypoint_nav` 在完成那一拍把 `settled_index_ / settled_error_` 记进 `/waypoint/progress` 的 `[4] / [5]` 两个新元素，验收脚本按"完成的航点号 → 稳态误差"取值。**这是典型的"测量口而不是被测系统"的问题**：如果当时把判据改成"取 dwell 最大时的误差"，就会把一个不准确的测量当成结论。
+
+**坑 S：字符串替换 `if (...) {` 时把开括号吃掉**
+给 `mission_manager` 加 `WAYPOINT` 分支时，用脚本替换原来的 `if (!callLanding(...)) {`，替换串漏了行尾的 `{`，编译报 `expected unqualified-id before 'if'` + `expected ';' after class definition`（报错行号全是下游，根因在 299 行）。→ 教训：**改带括号的行，替换串必须把 `{` 写全**；另外这类"括号错位"的报错会连累一堆 `not declared in this scope`，别被下游错误带跑偏。
+
+---
+
+## 6. 当前状态与下一步
 
 | 里程碑 | 状态 |
 | --- | --- |
@@ -320,7 +386,8 @@ real_time_factor: 0.92995854477297035
 | M1 视觉检测 | ✅ 完成（id/字典/尺寸标定完成，精度受 EKF 限制已说明） |
 | M2 飞控封装 + 键盘 + F1 | ✅ 完成（F1 PASS） |
 | M3 视觉伺服降落 + F2 | ✅ 完成（F2 PASS，落点水平误差 0.01 m） |
-| M4 航点导航 + F3 | ⏳ 下一步 |
-| M5 全自主 + F4 / M6 异常处理 + F5 | ⏳ 未开始 |
+| M4 航点导航 + F3 | ✅ 完成（F3 PASS，三点稳态误差 0.158/0.075/0.102 m） |
+| M5 全自主 + F4 | ⏳ 下一步 |
+| M6 异常处理 + F5 | ⏳ 未开始 |
 
-代码提交：`712d516`(M0) → `7e62583`(需求书修正) → `8b52c1e`(M1) → `7bb6e6b`(M2) → M3 见 `git log`。
+代码提交：`712d516`(M0) → `7e62583`(需求书修正) → `8b52c1e`(M1) → `7bb6e6b`(M2) → `0223ee3`(M3) → M4 见 `git log`。

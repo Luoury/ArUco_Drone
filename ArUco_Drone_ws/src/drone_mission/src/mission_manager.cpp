@@ -21,6 +21,7 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/twist.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
@@ -59,6 +60,12 @@ public:
     const std::string marker_topic = declare_parameter("marker_topic", "/aruco/detection");
     const std::string landing_state_topic =
       declare_parameter("landing_state_topic", "/aruco/landing/state");
+    // 航点链路（M4 起用；waypoint_nav 是唯一发航点设定点的节点）
+    waypoint_start_timeout_ = declare_parameter("waypoint_start_timeout", 5.0);
+    const std::string waypoint_state_topic =
+      declare_parameter("waypoint_state_topic", "/waypoint/state");
+    const std::string waypoint_progress_topic =
+      declare_parameter("waypoint_progress_topic", "/waypoint/progress");
 
     status_pub_ = create_publisher<drone_interfaces::msg::MissionStatus>("/mission/status", 10);
 
@@ -102,6 +109,22 @@ public:
 
     landing_start_client_ = create_client<std_srvs::srv::Trigger>("/aruco/landing/start");
     landing_stop_client_ = create_client<std_srvs::srv::Trigger>("/aruco/landing/stop");
+
+    waypoint_state_sub_ = create_subscription<std_msgs::msg::String>(
+      waypoint_state_topic, 10, [this](const std_msgs::msg::String::SharedPtr msg) {
+        waypoint_state_ = msg->data;
+      });
+    waypoint_progress_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
+      waypoint_progress_topic, 10,
+      [this](const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+        if (msg->data.size() >= 4) {
+          waypoint_index_ = static_cast<int>(msg->data[0]);
+          waypoint_total_ = static_cast<int>(msg->data[1]);
+          waypoint_error_ = static_cast<float>(msg->data[2]);
+        }
+      });
+    waypoint_start_client_ = create_client<std_srvs::srv::Trigger>("/waypoint/start");
+    waypoint_stop_client_ = create_client<std_srvs::srv::Trigger>("/waypoint/stop");
 
     RCLCPP_INFO(get_logger(), "mission_manager 就绪：flow=%s control=%.0f Hz", flow_.c_str(),
       control_rate_);
@@ -208,6 +231,38 @@ private:
       return;
     }
 
+    if (want == "WAYPOINT") {
+      // 与 ARUCO_LAND 同一套交接纪律（需求书 §5.5）：先起飞 → 置 HOVER → 等 0.5 s
+      // → 把设定点所有权交给 waypoint_nav。
+      if (!fc_->armed()) {
+        drone_control::OffboardOptions options;
+        options.rate_hz = control_rate_;
+        if (!fc_->takeoff(manual_altitude_, options, takeoff_tolerance_)) {
+          RCLCPP_ERROR(get_logger(), "起飞失败，保持 %s", mode_.c_str());
+          return;
+        }
+      }
+      hold_ = fc_->localPose();
+      mode_ = "HOVER";
+      state_ = "SWITCHING";
+      const auto until = SteadyClock::now() +
+        std::chrono::milliseconds(static_cast<int>(mode_switch_hover_ * 1000.0));
+      while (rclcpp::ok() && SteadyClock::now() < until) {
+        fc_->spinOnce();
+        fc_->publishPositionSetpoint(hold_, 0.0);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+      if (!callTrigger("/waypoint/start", waypoint_start_client_, waypoint_start_timeout_)) {
+        RCLCPP_ERROR(get_logger(), "WAYPOINT 启动失败（waypoint_nav 可能没起）");
+        mode_ = "HOVER";
+        state_ = "HOVER";
+        return;
+      }
+      mode_ = "WAYPOINT";
+      state_ = "WAYPOINT";
+      return;
+    }
+
     if (want == "ARUCO_LAND") {
       // 需求书 §5.5：先停当前输出 → 置 HOVER → 等 0.5 s → 再交给 landing_controller，
       // 避免两个节点同时发 setpoint 打架。
@@ -229,7 +284,9 @@ private:
         fc_->publishPositionSetpoint(hold_, 0.0);
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
       }
-      if (!callLanding("/aruco/landing/start", landing_start_client_)) {
+      if (!callTrigger("/aruco/landing/start", landing_start_client_,
+        landing_start_timeout_))
+      {
         RCLCPP_ERROR(get_logger(), "ARUCO_LAND 启动失败（landing_controller 可能没起）");
         mode_ = "HOVER";
         state_ = "HOVER";
@@ -241,9 +298,14 @@ private:
     }
 
     if (want == "IDLE" || want == "HOVER" || want == "MANUAL" || want == "LAND") {
+      // 从航点模式切出去时先叫停 waypoint_nav，否则它会继续发航点设定点
+      if (mode_ == "WAYPOINT") {
+        callTrigger("/waypoint/stop", waypoint_stop_client_, waypoint_start_timeout_);
+        waypoint_state_ = "IDLE";
+      }
       // 从降落模式切出去时，先叫停 landing_controller，否则它会继续发设定点
       if (landing_active()) {
-        callLanding("/aruco/landing/stop", landing_stop_client_);
+        callTrigger("/aruco/landing/stop", landing_stop_client_, landing_start_timeout_);
         landing_state_ = "IDLE";
       }
     }
@@ -257,9 +319,9 @@ private:
     return landing_state_ != "IDLE" && landing_state_ != "DONE" && !landing_state_.empty();
   }
 
-  /// 同步调用 landing_controller 的 Trigger 服务（本节点是单线程流水，直接自旋等结果）
-  bool callLanding(const std::string & name,
-    rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr & client)
+  /// 同步调用外部控制器的 Trigger 服务（本节点是单线程流水，直接自旋等结果）
+  bool callTrigger(const std::string & name,
+    rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr & client, double timeout_s)
   {
     if (!client->wait_for_service(std::chrono::seconds(2))) {
       RCLCPP_ERROR(get_logger(), "服务 %s 不可用", name.c_str());
@@ -268,7 +330,7 @@ private:
     auto future = client->async_send_request(
       std::make_shared<std_srvs::srv::Trigger::Request>());
     const auto deadline = SteadyClock::now() +
-      std::chrono::milliseconds(static_cast<int>(landing_start_timeout_ * 1000.0));
+      std::chrono::milliseconds(static_cast<int>(timeout_s * 1000.0));
     while (rclcpp::ok() && future.wait_for(std::chrono::milliseconds(10)) !=
       std::future_status::ready)
     {
@@ -290,6 +352,12 @@ private:
     // （否则两个发布者抢 /mavros/setpoint_raw/local，无人机会抖）
     if (mode_ == "ARUCO_LAND") {
       monitorLanding();
+      return;
+    }
+
+    // WAYPOINT：设定点由 waypoint_nav 独占，本节点只看它的状态
+    if (mode_ == "WAYPOINT") {
+      monitorWaypoint();
       return;
     }
 
@@ -359,6 +427,20 @@ private:
     }
   }
 
+  /// 监视 waypoint_nav：它跑完（DONE）后本节点收回控制权，就地悬停
+  void monitorWaypoint()
+  {
+    if (waypoint_state_ == "DONE") {
+      RCLCPP_INFO(get_logger(), "waypoint_nav 已 DONE，模式回 HOVER（%d 个航点）", waypoint_total_);
+      waypoint_state_ = "IDLE";
+      hold_ = fc_->localPose();
+      mode_ = "HOVER";
+      state_ = "WAYPOINT_DONE";
+    } else if (waypoint_state_ == "IDLE" && state_ == "WAYPOINT") {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "waypoint_nav 报 IDLE，可能已停止");
+    }
+  }
+
   void publishStatus()
   {
     drone_interfaces::msg::MissionStatus msg;
@@ -377,7 +459,12 @@ private:
     } else {
       marker_lateral_error_ = -1.0F;
     }
-    msg.lateral_error = marker_lateral_error_;
+    // WAYPOINT 模式下 lateral_error 指"到当前航点的距离"，便于验收脚本对照
+    if (mode_ == "WAYPOINT") {
+      msg.lateral_error = waypoint_error_;
+    } else {
+      msg.lateral_error = marker_lateral_error_;
+    }
     msg.vertical_speed = static_cast<float>(verticalSpeed());
     msg.marker_visible = marker_visible_;
     msg.armed = fc_->armed();
@@ -448,6 +535,13 @@ private:
   bool has_marker_{false};
   std::string landing_state_{"IDLE"};
 
+  // 航点链路（M4）
+  double waypoint_start_timeout_{5.0};
+  std::string waypoint_state_{"IDLE"};
+  int waypoint_index_{0};
+  int waypoint_total_{0};
+  float waypoint_error_{-1.0F};
+
   double last_z_{0.0};
   SteadyClock::time_point last_z_time_{};
   bool has_z_{false};
@@ -460,6 +554,10 @@ private:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr landing_state_sub_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr landing_start_client_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr landing_stop_client_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr waypoint_state_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr waypoint_progress_sub_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr waypoint_start_client_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr waypoint_stop_client_;
 };
 
 }  // namespace drone_mission

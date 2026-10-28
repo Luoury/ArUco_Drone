@@ -10,6 +10,7 @@ PATTERNS=(
   "sim_bringup.launch.py"
   "flow_f1.launch.py"
   "flow_f2.launch.py"
+  "flow_f3.launch.py"
   "hover_test"
   "aruco_detector"
   "landing_controller"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""流程自动验收（需求书 §7）。当前实现 F1，后续里程碑在这里继续加 F2~F5。
+"""流程自动验收（需求书 §7）。当前实现 F1/F2/F3，后续里程碑继续加 F4~F5。
 
 F1（纯手动）：起飞 → 飞一圈 → 降落。
 判据：起飞高度 > 1.2 m；最终高度 < 0.2 m；全程无 crash。
@@ -24,7 +24,7 @@ import rclpy
 from geometry_msgs.msg import PoseStamped, Twist
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-from std_msgs.msg import String
+from std_msgs.msg import Float64MultiArray, String
 
 from drone_interfaces.msg import MissionStatus
 
@@ -65,6 +65,20 @@ class Verifier(Node):
         self.status_sub = self.create_subscription(
             MissionStatus, '/mission/status', self.on_status, 10)
 
+        # F3 专用参数（默认值见 drone_bringup/config/flows.yaml 的 verify_flow 段）
+        self.f3_waypoint_max = float(p('f3_waypoint_max', 0.35).value)
+        self.f3_flow_timeout = float(p('f3_flow_timeout', 180.0).value)
+        self.f3_settle_hold = float(p('f3_settle_hold', 2.0).value)
+        self.f3_waypoint_count = int(p('f3_waypoint_count', 3).value)
+
+        # F3 用：waypoint_nav 的状态与进度（progress = [序号, 总数, 误差, 稳定秒数]）
+        self.waypoint_state = ''
+        self.waypoint_states = []
+        self.waypoint_index = 0
+        self.waypoint_error = -1.0
+        self.waypoint_dwell = 0.0
+        self.waypoint_settled = {}
+
         # F2 专用参数（默认值见 drone_bringup/config/flows.yaml 的 verify_flow 段）
         self.f2_lateral_max = float(p('f2_lateral_max', 0.25).value)
         self.f2_altitude_max = float(p('f2_altitude_max', 0.25).value)
@@ -78,6 +92,10 @@ class Verifier(Node):
             PoseStamped, '/aruco/detection', self.on_marker, sensor_qos)
         self.landing_sub = self.create_subscription(
             String, '/aruco/landing/state', self.on_landing_state, 10)
+        self.waypoint_state_sub = self.create_subscription(
+            String, '/waypoint/state', self.on_waypoint_state, 10)
+        self.waypoint_progress_sub = self.create_subscription(
+            Float64MultiArray, '/waypoint/progress', self.on_waypoint_progress, 10)
 
     # ---------- 视觉链路回调 ----------
 
@@ -99,6 +117,30 @@ class Verifier(Node):
             self.landing_state = msg.data
             self.landing_states.append(msg.data)
             self.say(f'landing 阶段 → {msg.data}')
+
+    def on_waypoint_state(self, msg):
+        if msg.data != self.waypoint_state:
+            self.waypoint_state = msg.data
+            self.waypoint_states.append(msg.data)
+            self.say(f'航点阶段 → {msg.data}')
+
+    def on_waypoint_progress(self, msg):
+        if len(msg.data) < 4:
+            return
+        self.waypoint_index = int(msg.data[0])
+        self.waypoint_error = float(msg.data[2])
+        self.waypoint_dwell = float(msg.data[3])
+        # waypoint_nav 在"完成某航点"那一拍会把 [4]/[5] 填成该点的稳态误差；
+        # 不能只看 dwell（它在完成时立刻清零，抓不到）。
+        if len(msg.data) >= 6:
+            idx = int(msg.data[4])
+            if idx > 0 and idx not in self.waypoint_settled:
+                self.waypoint_settled[idx] = float(msg.data[5])
+                self.say(f'航点 {idx} 稳态误差 = {float(msg.data[5]):.3f} m')
+        # 兜底：万一 [4]/[5] 缺失，用"dwell 达标时的当前误差"
+        elif (self.waypoint_dwell >= self.f3_settle_hold and self.waypoint_index > 0
+                and self.waypoint_index not in self.waypoint_settled):
+            self.waypoint_settled[self.waypoint_index] = self.waypoint_error
 
     def horizontal_error(self):
         """无人机与码在水平面上的距离；没有检测结果时用世界原点（码就在 (0,0)）"""
@@ -311,6 +353,76 @@ def run_f2(node):
     return passed
 
 
+def run_f3(node):
+    """F3：纯自主航点飞行（需求书 §5.6 F3）。
+
+    判据：每个航点稳态误差 ≤ 0.35 m；全程 ≤ 180 s；零人工输入。
+    """
+    node.say('开始：F3 纯自主航点（起飞 → 3 个航点 → 回码上方悬停 → 降落）')
+    t_begin = time.monotonic()
+
+    ok, waited = node.wait_until(lambda: node.status is not None, node.status_timeout,
+                                 label='/mission/status')
+    if not ok:
+        node.say('FAIL 原因：收不到 /mission/status（mission_manager 没起？）')
+        return False
+    node.say(f'mission_manager 在线（{waited:.1f} s），当前 mode = {node.status.mode}')
+
+    # ① 一条模式指令，之后全程不干预（这就是"零人工输入"）
+    node.say("请求模式 WAYPOINT（此后不再发任何遥控指令）")
+    node.request_mode('WAYPOINT')
+    node.tracking_flight = True
+
+    # ② 等 waypoint_nav 跑完（mission_manager 会把它收回成 HOVER + WAYPOINT_DONE）
+    remaining = max(1.0, node.f3_flow_timeout - (time.monotonic() - t_begin))
+    ok, waited = node.wait_until(
+        lambda: node.status is not None and node.status.state == 'WAYPOINT_DONE',
+        remaining, label='全部航点完成')
+    node.say(f'航点阶段 = {" → ".join(node.waypoint_states) or "(空)"}')
+    if not ok:
+        node.say(f'FAIL 原因：航点流程超时（当前航点 {node.waypoint_index}，'
+                 f'误差 {node.waypoint_error:.2f} m）')
+        return False
+
+    # ③ 降落
+    node.request_mode('LAND')
+    ok, waited = node.wait_until(lambda: not node.armed(), node.land_timeout,
+                                 label='上锁')
+    final_altitude = node.altitude()
+    node.tracking_flight = False
+    elapsed = time.monotonic() - t_begin
+    node.say(f'landed = {"yes" if ok else "no"}（{waited:.1f} s），'
+             f'final_altitude = {final_altitude:.2f} m，elapsed = {elapsed:.1f} s')
+    if not ok:
+        node.say('FAIL 原因：降落未完成（还没上锁）')
+        return False
+
+    # ④ 判据
+    passed = True
+    for idx in range(1, node.f3_waypoint_count + 1):
+        err = node.waypoint_settled.get(idx, -1.0)
+        if err < 0.0:
+            node.say(f'waypoint_{idx}_error = (未收到稳态数据)（判据 <= '
+                     f'{node.f3_waypoint_max:.2f}）→ 超出')
+            passed = False
+            continue
+        good = err <= node.f3_waypoint_max
+        node.say(f'waypoint_{idx}_error = {err:.3f} m（判据 <= '
+                 f'{node.f3_waypoint_max:.2f}）→ {"ok" if good else "超出"}')
+        passed = passed and good
+
+    good = elapsed <= node.f3_flow_timeout
+    node.say(f'elapsed = {elapsed:.2f} s（判据 <= {node.f3_flow_timeout:.2f}）→ '
+             f'{"ok" if good else "超出"}')
+    passed = passed and good
+
+    good = final_altitude <= node.final_max
+    node.say(f'final_altitude = {final_altitude:.2f} m（判据 <= {node.final_max:.2f}）→ '
+             f'{"ok" if good else "超出"}')
+    passed = passed and good
+    return passed
+
+
 def _vec(x, y, z):
     from geometry_msgs.msg import Vector3
     return Vector3(x=float(x), y=float(y), z=float(z))
@@ -328,8 +440,10 @@ def main(argv=None):
             passed = run_f1(node)
         elif args.flow.upper() == 'F2':
             passed = run_f2(node)
+        elif args.flow.upper() == 'F3':
+            passed = run_f3(node)
         else:
-            node.say(f'FAIL 原因：流程 {args.flow} 尚未实现（当前支持 F1/F2）')
+            node.say(f'FAIL 原因：流程 {args.flow} 尚未实现（当前支持 F1/F2/F3）')
             passed = False
     except KeyboardInterrupt:
         node.request_mode('LAND')

@@ -22,6 +22,11 @@ mission_manager:
     mode_switch_hover: 0.5      # s，切模式前先悬停稳定（需求书 §5.5）
     landing_start_timeout: 5.0  # s，调用 /aruco/landing/start 的超时
 
+    # ---- 航点链路（M4 起）：mission_manager 只调度，航点决策在 waypoint_nav ----
+    waypoint_state_topic: /waypoint/state        # String：IDLE/TAKEOFF/GOTO/HOLD/DONE
+    waypoint_progress_topic: /waypoint/progress  # Float64MultiArray：[序号, 总数, 误差, 稳定秒数]
+    waypoint_start_timeout: 5.0  # s，调用 /waypoint/start 的超时
+
 drone_teleop:
   ros__parameters:
     publish_rate: 20.0          # Hz，/teleop/cmd 发布频率
@@ -45,3 +50,7 @@ verify_flow:
     f2_altitude_max: 0.25       # m，F2 最终高度上限
     f2_flow_timeout: 150.0      # s，F2 全程时间上限
     f2_offset_time: 2.0         # s，F2 起飞后"手动飞离码"的时长
+    f3_waypoint_max: 0.35       # m，F3 每个航点的稳态误差上限
+    f3_flow_timeout: 180.0      # s，F3 全程时间上限
+    f3_settle_hold: 2.0         # s，与 waypoints.yaml 的 steady_hold 对齐（判定"已稳定"的口径）
+    f3_waypoint_count: 3        # 个，F3 要求验收的航点数

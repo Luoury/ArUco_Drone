@@ -1,0 +1,30 @@
+# 航点表（F3 / F4 共用）
+#
+# `waypoints` 是扁平数组，每 `waypoint_dim` 个数一组 (x, y, z)，单位 m，ENU：
+#   x 向东，y 向北，z 向上；地图原点就是 ArUco 码的位置（aruco.sdf 把码放在原点）。
+#
+# 三个航点的设计意图：
+#   1. (3.0, 0.0, 2.0)  —— 正东 3 m，验证"直线飞出去 + 定高"
+#   2. (3.0, 3.0, 2.0)  —— 东北角，验证"两轴同时变"
+#   3. (0.0, 0.0, 2.0)  —— 回到码正上方 2 m，为 F4 的"搜码 → 降落"接力留好位置
+#
+# 判据（需求书 F3）：每个航点稳态误差 ≤ 0.35 m，全程 ≤ 180 s。
+waypoint_nav:
+  ros__parameters:
+    waypoint_dim: 3
+    waypoints: [3.0, 0.0, 2.0,
+                3.0, 3.0, 2.0,
+                0.0, 0.0, 2.0]
+    # 判定"到位"的半径；进入后连续稳定 steady_hold 秒才算该航点完成
+    settle_tol: 0.30
+    steady_hold: 2.0
+    # 单点超时：超了就告警并继续下一个，不让整条流程卡死
+    goto_timeout: 45.0
+    control_rate: 50.0
+    prestream: 2.0
+    takeoff_tolerance: 0.15
+    takeoff_timeout: 30.0
+    # 跑完后的行为：HOVER 就地悬停（降落由 mission_manager 调度），可选 LAND
+    finish_action: HOVER
+    state_topic: /waypoint/state
+    progress_topic: /waypoint/progress

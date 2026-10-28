@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>drone_nav</name>
+  <version>0.1.0</version>
+  <description>航点导航：按 waypoints.yaml 顺序飞行并稳态保持（需求书 §5.4 / F3）</description>
+  <maintainer email="895046060@qq.com">luosury</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>drone_control</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
