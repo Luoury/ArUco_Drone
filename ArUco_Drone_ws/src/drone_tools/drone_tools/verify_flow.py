@@ -16,6 +16,8 @@ F1（纯手动）：起飞 → 飞一圈 → 降落。
 """
 
 import argparse
+import shutil
+import subprocess
 import math
 import sys
 import time
@@ -49,6 +51,7 @@ class Verifier(Node):
         self.max_altitude = 0.0
         self.min_altitude_in_flight = float('inf')
         self.crashed = False
+        self.low_since = 0.0
         self.tracking_flight = False
 
         # F2 用：机体位姿（mavros 发布的是 BEST_EFFORT，必须显式声明，否则一条收不到）
@@ -84,6 +87,14 @@ class Verifier(Node):
         self.f4_lateral_max = float(p('f4_lateral_max', 0.25).value)
         self.f4_altitude_max = float(p('f4_altitude_max', 0.25).value)
         self.f4_flow_timeout = float(p('f4_flow_timeout', 180.0).value)
+        self.f5_trigger_alt = float(p('f5_trigger_alt', 1.9).value)
+        self.f5_occlusion = float(p('f5_occlusion', 3.0).value)
+        self.f5_rise_min = float(p('f5_rise_min', 1.0).value)
+        self.f5_rise_window = float(p('f5_rise_window', 12.0).value)
+        self.f5_lateral_max = float(p('f5_lateral_max', 0.25).value)
+        self.f5_altitude_max = float(p('f5_altitude_max', 0.25).value)
+        self.f5_flow_timeout = float(p('f5_flow_timeout', 240.0).value)
+        self.world = p('world', 'aruco').value
 
         # F2 专用参数（默认值见 drone_bringup/config/flows.yaml 的 verify_flow 段）
         self.f2_lateral_max = float(p('f2_lateral_max', 0.25).value)
@@ -170,8 +181,18 @@ class Verifier(Node):
             self.max_altitude = msg.altitude
         if self.tracking_flight and msg.armed:
             self.min_altitude_in_flight = min(self.min_altitude_in_flight, msg.altitude)
-            if msg.altitude < self.crash_alt:
-                self.crashed = True
+            # crash 判据：只有"不在最后贴地阶段"、且持续低于阈值才算撞地/失控。
+            # 正常降落必然穿越 0.5 m，且状态切换消息比高度晚几十毫秒 —— 第一版
+            # 因此把每一次成功降落都判成 crash。这里加 1 s 去抖。
+            if msg.altitude < self.crash_alt and self.landing_state not in (
+                    'FINAL', 'TOUCHDOWN', 'DONE'):
+                now = time.monotonic()
+                if self.low_since == 0.0:
+                    self.low_since = now
+                elif now - self.low_since >= 1.0:
+                    self.crashed = True
+            else:
+                self.low_since = 0.0
 
     def altitude(self):
         return self.status.altitude if self.status is not None else -1.0
@@ -432,6 +453,86 @@ def run_f3(node):
     return passed
 
 
+
+def _pose_z(node):
+    if node.pose is None:
+        return -1.0
+    return float(node.pose.pose.position.z)
+
+
+def _gz_request(service, reqtype, reptype, request, timeout=8):
+    """调 Gazebo 服务（F5 用它临时塞/撤遮挡板）。返回 (ok, 输出)。"""
+    exe = shutil.which('gz')
+    if exe is None:
+        return False, 'PATH 里找不到 gz 命令'
+    cmd = [exe, 'service', '-s', service, '--reqtype', reqtype, '--reptype', reptype,
+           '--timeout', str(int(timeout * 1000)), '-r', request]
+    try:
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
+    except subprocess.TimeoutExpired:
+        return False, 'gz service 超时'
+    return done.returncode == 0, (done.stdout + done.stderr).strip()
+
+
+def _occluder_sdf():
+    # 3 m × 3 m × 5 cm 的黑色静止板：在相机与码之间撑满视场，制造"完全看不见码"。
+    # XML 属性一律用单引号：外层请求串本身用双引号包 sdf 的值，
+    # 里面再出现双引号会把 gz 的文本解析截断（第一次跑就是这么"生成成功但其实没生成"的）。
+    return ("<sdf version='1.6'><model name='occluder'><static>true</static>"
+            "<link name='link'><visual name='visual'>"
+            "<geometry><box><size>3 3 0.05</size></box></geometry>"
+            "<material><ambient>0 0 0 1</ambient><diffuse>0 0 0 1</diffuse>"
+            "<specular>0.1 0.1 0.1 1</specular></material>"
+            "</visual></link></model></sdf>")
+
+
+def _spawn_occluder(node, altitude):
+    pose = _pose(node)
+    x = pose[0] if pose else 0.0
+    y = pose[1] if pose else 0.0
+    req = (f'name: "occluder", '
+           f'pose: {{position: {{x: {x:.3f}, y: {y:.3f}, z: {altitude:.3f}}}, '
+           f'orientation: {{w: 1.0}}}}, sdf: "{_occluder_sdf()}"')
+    return _gz_request(f'/world/{node.world}/create', 'gz.msgs.EntityFactory',
+                       'gz.msgs.Boolean', req)
+
+
+def _list_models(node):
+    """诊断用：确认遮挡板真的进了世界。"""
+    exe = shutil.which('gz')
+    if exe is None:
+        return '(no gz)'
+    try:
+        done = subprocess.run([exe, 'model', '-l'], capture_output=True, text=True, timeout=8)
+        return ' '.join(done.stdout.split())[:300]
+    except subprocess.TimeoutExpired:
+        return '(gz model -l 超时)'
+
+
+def _model_pose(node, name):
+    exe = shutil.which('gz')
+    if exe is None:
+        return '(no gz)'
+    try:
+        done = subprocess.run([exe, 'model', '-m', name, '-p'],
+                              capture_output=True, text=True, timeout=8)
+        return ' '.join((done.stdout + done.stderr).split())[:200]
+    except subprocess.TimeoutExpired:
+        return '(gz model -p 超时)'
+
+
+def _pose(node):
+    if node.pose is None:
+        return None
+    p = node.pose.pose.position
+    return (p.x, p.y, p.z)
+
+
+def _remove_occluder(node):
+    req = 'name: "occluder", type: 2'
+    return _gz_request(f'/world/{node.world}/remove', 'gz.msgs.Entity',
+                       'gz.msgs.Boolean', req)
+
 def run_f4(node):
     """F4：全自动链路（需求书 §5.6 F4 / M5）。
 
@@ -499,6 +600,142 @@ def run_f4(node):
     return passed
 
 
+def run_f5(node):
+    """F5：异常处理（需求书 §5.6 F5 / M6）。
+
+    自动链路跑到下降段时，用一块 3 m 见方的黑板在相机与码之间遮 3 s，
+    要求：① 检测确实中断；② 无人机主动回升 ≥ 1.0 m；③ 全程不坠机；
+    ④ 遮挡撤除后自己找回码并完成降落（水平误差 ≤ 0.25 m、高度 ≤ 0.25 m）。
+    """
+    node.say('开始：F5 异常处理（AUTO 全自动 + 下降途中遮挡相机 3 s）')
+    t_begin = time.monotonic()
+
+    ok, waited = node.wait_until(lambda: node.status is not None, node.status_timeout,
+                                 label='/mission/status')
+    if not ok:
+        node.say('FAIL 原因：收不到 /mission/status')
+        return False
+    node.say(f'mission_manager 在线（{waited:.1f} s），当前 mode = {node.status.mode}')
+
+    node.say('请求模式 AUTO（此后不再发任何指令，遮挡由本脚本从 Gazebo 侧施加）')
+    node.request_mode('AUTO')
+    node.tracking_flight = True
+
+    # 等它自己下降到触发高度（DESCEND 或 FINAL 阶段）
+    ok, waited = node.wait_until(
+        lambda: node.landing_state in ('DESCEND', 'FINAL') and _pose_z(node) <= node.f5_trigger_alt,
+        node.f5_flow_timeout, label='进入下降段')
+    if not ok:
+        node.tracking_flight = False
+        node.say(f'FAIL 原因：{node.f5_flow_timeout:.0f} s 内没进入下降段'
+                 f'（当前 landing = {node.landing_state or "?"}，高度 {_pose_z(node):.2f} m）')
+        return False
+
+    alt_before = _pose_z(node)
+    frames_before = node.marker_frames
+    node.say(f'下降段已到位：高度 {alt_before:.2f} m，正准备施加遮挡')
+
+    spawned, out = _spawn_occluder(node, max(alt_before - 0.5, 0.6))
+    if not spawned:
+        node.tracking_flight = False
+        node.say(f'FAIL 原因：遮挡板生成失败（{out}）')
+        return False
+    plate_z = max(alt_before - 0.5, 0.6)
+    node.say(f'遮挡板已生成（z = {plate_z:.2f} m），保持 {node.f5_occlusion:.1f} s')
+    node.say(f'诊断：世界模型列表 = {_list_models(node)}')
+    node.say(f'诊断：occluder 位姿 = {_model_pose(node, "occluder")}')
+
+    # 遮挡期间采样：最低高度 + "最长无检测间隔"
+    # 判据不能用"帧数 == 0"：板子加载要一两百毫秒，开头几帧必然还在（第一次跑 60 帧、
+    # 第二次 7 帧，都被误判成"没遮住"）。真正的物理事实是"有一段时间完全看不到码"，
+    # 所以用最长间隔来衡量。
+    min_alt = alt_before
+    last_seen = time.monotonic()
+    last_count = node.marker_frames
+    max_gap = 0.0
+    end = time.monotonic() + node.f5_occlusion
+    while time.monotonic() < end:
+        rclpy.spin_once(node, timeout_sec=0.1)
+        z = _pose_z(node)
+        if z > 0.0:
+            min_alt = min(min_alt, z)
+        now = time.monotonic()
+        if node.marker_frames != last_count:
+            last_count = node.marker_frames
+            last_seen = now
+        else:
+            max_gap = max(max_gap, now - last_seen)
+    frames_during = node.marker_frames - frames_before
+
+    removed, out = _remove_occluder(node)
+    node.say(f'遮挡分析：{frames_during} 帧 / 最长无检测间隔 {max_gap:.2f} s'
+             f'（遮挡 {node.f5_occlusion:.1f} s）')
+    node.say(f'遮挡板已撤除（{"ok" if removed else "失败: " + out}），'
+             f'遮挡期间检测帧数 = {frames_during}')
+
+    # 回升窗口：记录最高高度
+    max_alt = min_alt
+    end = time.monotonic() + node.f5_rise_window
+    while time.monotonic() < end:
+        rclpy.spin_once(node, timeout_sec=0.1)
+        z = _pose_z(node)
+        if z > 0.0:
+            max_alt = max(max_alt, z)
+    rise = max_alt - min_alt
+    node.say(f'遮挡后最高 {max_alt:.2f} m，遮挡期间最低 {min_alt:.2f} m，'
+             f'回升 = {rise:.2f} m')
+
+    ok, waited = node.wait_until(
+        lambda: node.status is not None and node.status.state == 'AUTO_DONE',
+        node.f5_flow_timeout, label='恢复后完成降落')
+    elapsed = time.monotonic() - t_begin
+    node.tracking_flight = False
+
+    node.say(f'状态序列 = {" → ".join(node.status_states)}')
+    node.say(f'降落阶段 = {" → ".join(node.landing_states) or "(空)"}')
+    node.say(f'marker_detected = {"yes" if node.marker_frames > 0 else "no"}'
+             f'（全程 {node.marker_frames} 帧）')
+    node.say(f'landed = {"yes" if ok else "no"}（{waited:.1f} s），'
+             f'final_altitude = {node.altitude():.2f} m，elapsed = {elapsed:.1f} s')
+    if not ok:
+        node.say(f'FAIL 原因：遮挡恢复后未在 {node.f5_flow_timeout:.0f} s 内走完 AUTO_DONE'
+                 f'（当前 state = {node.status.state if node.status else "?"}）')
+        return False
+
+    final_lateral = node.marker_lateral
+    if final_lateral < 0.0:
+        node.say('FAIL 原因：全程从未测到水平误差，不能判合格')
+        return False
+
+    # 物理判据：出现过 >= 60% 遮挡时长 的完全无检测间隔
+    occluded = max_gap >= 0.6 * node.f5_occlusion
+    checks = [
+        ('marker_occluded', 1.0 if occluded else 0.0, '==', 1.0),
+        ('altitude_rise', rise, '>=', node.f5_rise_min),
+        ('no_crash', 1.0 if not node.crashed else 0.0, '==', 1.0),
+        ('final_lateral', final_lateral, '<=', node.f5_lateral_max),
+        ('final_altitude', node.altitude(), '<=', node.f5_altitude_max),
+        ('elapsed', elapsed, '<=', node.f5_flow_timeout),
+    ]
+    passed = True
+    for name, value, op, limit in checks:
+        if op == '>=':
+            good = value >= limit
+        elif op == '==':
+            good = value == limit
+        else:
+            good = value <= limit
+        if name in ('marker_occluded', 'no_crash'):
+            node.say(f'{name} = {"yes" if value else "no"}（判据 == yes）→ '
+                     f'{"ok" if good else "超出"}')
+        else:
+            unit = 's' if name == 'elapsed' else 'm'
+            node.say(f'{name} = {value:.2f} {unit}（判据 {op} {limit:.2f}）→ '
+                     f'{"ok" if good else "超出"}')
+        passed = passed and good
+    return passed
+
+
 def _vec(x, y, z):
     from geometry_msgs.msg import Vector3
     return Vector3(x=float(x), y=float(y), z=float(z))
@@ -520,8 +757,10 @@ def main(argv=None):
             passed = run_f3(node)
         elif args.flow.upper() == 'F4':
             passed = run_f4(node)
+        elif args.flow.upper() == 'F5':
+            passed = run_f5(node)
         else:
-            node.say(f'FAIL 原因：流程 {args.flow} 尚未实现（当前支持 F1/F2/F3/F4）')
+            node.say(f'FAIL 原因：流程 {args.flow} 尚未实现（当前支持 F1/F2/F3/F4/F5）')
             passed = False
     except KeyboardInterrupt:
         node.request_mode('LAND')

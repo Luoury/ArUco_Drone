@@ -59,4 +59,12 @@ verify_flow:
     f3_waypoint_count: 3        # 个，F3 要求验收的航点数
     f4_lateral_max: 0.25        # m，F4 最终水平误差上限
     f4_altitude_max: 0.25       # m，F4 最终高度上限
-    f4_flow_timeout: 180.0      # s，F4 全程时间上限（要 ≥ mission_manager 的 auto_timeout）
+    f4_flow_timeout: 180.0
+    # ---- F5（异常处理）：下降途中遮挡 3 s，要求主动回升 >= 1.0 m 并恢复降落 ----
+    f5_trigger_alt: 2.4            # m，跌到这个高度以下、且处于 DESCEND/FINAL 时施加遮挡
+    f5_occlusion: 3.0              # s，遮挡持续时间（需求书 F5 指定 3 s）
+    f5_rise_min: 1.0               # m，遮挡后相对最低点的最小回升量（需求书 F5 判据）
+    f5_rise_window: 12.0           # s，撤除遮挡后观察回升的窗口
+    f5_lateral_max: 0.25           # m，最终水平误差
+    f5_altitude_max: 0.25          # m，最终高度
+    f5_flow_timeout: 240.0         # s，F5 总时限（要留出遮挡 + 回升 + 重新降落）      # s，F4 全程时间上限（要 ≥ mission_manager 的 auto_timeout）

@@ -21,7 +21,12 @@ landing_controller:
     final_alt: 0.5          # DESCEND → FINAL 的高度 [m]
     touchdown_alt: 0.15     # FINAL → TOUCHDOWN 的高度 [m]
     safety_alt: 0.12        # 低于此高度无条件上锁降落 [m]
-    relost_hover: 1.0       # 码丢失后原地悬停多久再回 SEARCH [s]
+    relost_hover: 1.0       # s，丢码后原地悬停，期间恢复则留在原阶段
+    # FINAL 阶段丢码时按最后对准结果继续下降（不再回升搜索）：
+    # 0.15 m 处 tag 已超出相机 1.74 rad 视场，检测必然丢，回升只会陷入死循环
+    final_commit: true
+    relost_climb_gain: 2.0  # m，丢码后重新抬升的高度增量（F5 要求 >= 1.0）
+    max_search_alt: 4.0     # m，重新抬升的目标高度上限
     search_timeout: 60.0    # SEARCH 阶段最长时间，超时安全降落 [s]
     land_timeout: 40.0      # AUTO.LAND 等上锁的超时 [s]
     prestream: 2.0          # 接管前预发设定点的时长 [s]

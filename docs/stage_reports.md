@@ -475,7 +475,79 @@ F4 前三次都以同样的方式失败：链路、检测、状态机全对，�
 
 ---
 
-## 7. 当前状态与下一步
+## 7. M6 — 异常处理 + F5 流程
+
+### 7.1 交付物
+
+| 文件 | 说明 |
+| --- | --- |
+| `drone_aruco/src/landing_controller.cpp` | 丢码后**先抬升再搜索**（`relost_climb_gain` 2.0 m，上限 `max_search_alt` 4.0 m）；新增 `final_commit`：FINAL 阶段丢码不再回 SEARCH，按最后对准结果继续降到上锁 |
+| `drone_bringup/launch/flow_f5.launch.py` | F5 入口（sim_bringup + 检测 + 航点 + 降落 + mission_manager(F5)） |
+| `drone_tools/drone_tools/verify_flow.py` | `run_f4(occlude=True)`：AUTO 全链路 + 在 Gazebo 侧真实遮挡 3 s；新增遮挡分析、回升量、单次恢复判据 |
+| `drone_bringup/config/flows.yaml` | `f5_trigger_alt 2.4`、`f5_occlusion 3.0`、`f5_rise_min 1.0`、`f5_rise_window 12.0`、`f5_flow_timeout 240.0` 等 |
+| `scripts/dev_run_f5.sh` / `scripts/run_flow.sh` | F5 一键跑 / 五套流程统一入口（`run_flow.sh F1..F5`） |
+| `docs/flows.md` | 五套流程的入口、判据、实测结果与"判据怎么算" |
+
+### 7.2 F5 验收结果（真实输出）
+
+```
+[FLOW F5] 开始：F5 异常处理（AUTO 全自动 + 下降途中遮挡相机 3 s）
+[FLOW F5] 请求模式 AUTO（此后不再发任何指令，遮挡由本脚本从 Gazebo 侧施加）
+[FLOW F5] 航点 1/2/3 稳态误差 = 0.153 / 0.097 / 0.076 m
+[FLOW F5] 下降段已到位：高度 2.00 m，正准备施加遮挡
+[FLOW F5] 遮挡板已生成（z = 1.50 m），保持 3.0 s
+[FLOW F5] 诊断：occluder 位姿 = Model: [58] - Name: occluder - Pose [-0.080 0.013 1.497] [0 0 0]
+[FLOW F5] 遮挡分析：7 帧 / 最长无检测间隔 3.00 s（遮挡 3.0 s）
+[FLOW F5] 遮挡板已撤除（ok）
+[FLOW F5] 遮挡后最高 3.72 m，遮挡期间最低 1.85 m，回升 = 1.87 m
+[FLOW F5] 状态序列 = IDLE → AUTO_WAYPOINT → AUTO_LAND → AUTO_DONE
+[FLOW F5] 降落阶段 = IDLE → ALIGN → DESCEND → SEARCH → ALIGN → DESCEND → FINAL → DONE
+[FLOW F5] marker_detected = yes（全程 457 帧）
+[FLOW F5] landed = yes（6.2 s），final_altitude = 0.02 m，elapsed = 47.0 s
+
+[FLOW F5] marker_occluded = yes（判据 == yes）→ ok
+[FLOW F5] altitude_rise = 1.87 m（判据 >= 1.00）→ ok
+[FLOW F5] no_crash = yes（判据 == yes）→ ok
+[FLOW F5] final_lateral = 0.01 m（判据 <= 0.25）→ ok
+[FLOW F5] final_altitude = 0.02 m（判据 <= 0.25）→ ok
+[FLOW F5] elapsed = 46.97 s（判据 <= 240.00）→ ok
+[FLOW F5] RESULT: PASS
+```
+
+### 7.3 判据对照（需求书 §5.6 F5）
+
+| 指标 | 判据 | 实测 | 结论 |
+| --- | --- | --- | --- |
+| 是否真的被遮挡 | yes | 最长连续无检测 3.00 s（遮挡 3.0 s） | ✅ |
+| 遮挡后回升 | ≥1.0 m | 1.85 → 3.72 m，回升 1.87 m | ✅ |
+| 不坠机 | yes | 无 crash，状态机单次恢复 | ✅ |
+| 恢复后仍降落 | 水平 ≤0.25 / 高度 ≤0.25 | 0.01 m / 0.02 m | ✅ |
+| 全程耗时 | ≤240 s | 47.0 s | ✅ |
+
+### 7.4 决定性的坑
+
+**坑 V：遮挡板"创建成功"但其实没有创建 —— SDF 引号被截断**
+`gz service -s /world/aruco/create -r "sdf: '<sdf version="1.6">...', name: 'occluder'"`：外层已经是双引号，SDF 里的属性又用双引号，gz 的文本解析在第一个内层双引号处截断，实体创建**静默失败但返回 true**。表现是"遮挡板已生成"、检测帧数却和不遮挡一模一样（60 帧）。
+
+三条查证手段缺一不可：① `gz model -m occluder -p` 看实体是否真存在（返回 `Name: occluder - Pose [...]` 才算成功）；② 遮挡期间统计帧数；③ `gz model -l` 看世界模型列表。修法：SDF 内部属性一律单引号。
+
+**坑 W：FINAL 阶段丢码回 SEARCH 会造成死循环**
+0.15 m 处 0.5 m 的码已超出相机 1.74 rad 视场，检测必然丢；原来的"丢码 → 悬停 → 回 SEARCH 抬到 2.5 m"逻辑在这里变成死循环（F5 第二轮 60 s 里刷了 5 轮 `FINAL → SEARCH → ALIGN → DESCEND → FINAL`）。
+
+修法：`final_commit`（默认 true）——FINAL 阶段丢码视为"已经对准、继续降"，按 `-final_speed` 降到上锁；同时给"丢码后重新搜索"加上"先抬升 `relost_climb_gain`"（F5 要的回升量就来自这里）。
+
+**坑 X：验收判据本身把成功判成失败（两次）**
+1. "遮挡期间检测帧数 == 0" 太严 —— 板子加载有延迟，窗口开头必然有几帧。改成"最长连续无检测间隔 ≥ 60% 遮挡时长"。
+2. "`armed && altitude < 0.5` 即 crash" —— 正常降落必然穿越 0.5 m，且状态切换消息比高度晚几十毫秒，于是每一次成功降落都被记为撞地。改成"低于 0.5 m 持续 ≥1 s 且不在 FINAL/TOUCHDOWN/DONE"。
+
+**这两次的共同教训**：验收指标必须表达"物理事实"，而不是"实现细节的副产品"。指标错了会把好结果判死，比没指标更危险。
+
+**坑 Y：YAML 缩进错 2 个空格，rcl 直接崩进程**
+用脚本往 `landing.yaml` 插参数时缩进写错，rcl 报 `Couldn't parse params file: ... Cannot have a value before ros__parameters at line 27, at ./src/parse.c:787`，节点 `exit code -6`。改完必须 `python3 -c "import yaml; yaml.safe_load(open(...))"` 验一遍。
+
+---
+
+## 8. 当前状态与下一步
 
 | 里程碑 | 状态 |
 | --- | --- |
@@ -485,6 +557,34 @@ F4 前三次都以同样的方式失败：链路、检测、状态机全对，�
 | M3 视觉伺服降落 + F2 | ✅ 完成（F2 PASS，落点水平误差 0.01 m） |
 | M4 航点导航 + F3 | ✅ 完成（F3 PASS，三点稳态误差 0.158/0.075/0.102 m） |
 | M5 全自主 + F4 | ✅ 完成（F4 PASS，42.5 s，落点水平误差 0.04 m） |
-| M6 异常处理 + F5 | ⏳ 下一步 |
+| M6 异常处理 + F5 | ✅ 完成（F5 PASS，遮挡 3.00 s，回升 1.87 m，47.0 s） |
 
 代码提交：`712d516`(M0) → `7e62583`(需求书修正) → `8b52c1e`(M1) → `7bb6e6b`(M2) → `0223ee3`(M3) → `a329c60`(M4) → `c4c1190`(M4 收尾) → M5 见 `git log`。
+
+---
+
+## 9. 全流程回归（M6 收尾，一次连续跑）
+
+五套流程在同一天、同一环境下连续跑一遍，确认 `final_commit`（FINAL 阶段丢码不再回搜）等
+M6 改动没有破坏前面四套：
+
+| 流程 | 关键实测 | 结果 |
+| --- | --- | --- |
+| F1 纯手动 | 起飞 1.97 m，降落 7.7 s，最终 0.02 m | **PASS** |
+| F2 视觉降落 | 起飞 2.02 m，落点 `final_lateral = 0.00 m`、`final_altitude = 0.10 m`、31.7 s | **PASS** |
+| F3 航点 | 0.165 / 0.101 / 0.103 m，29.6 s，最终 0.01 m | **PASS** |
+| F4 全自主 | 0.155 / 0.115 / 0.108 m，37.4 s，最终 0.02 m | **PASS** |
+| F5 异常处理 | 遮挡 3.00 s，回升 1.87 m，47.0 s，落点 0.01 m | **PASS** |
+
+复现方式：`bash scripts/run_flow.sh F1`（依次 F1~F5）。
+
+## 10. 交付物总览
+
+| 类别 | 内容 |
+| --- | --- |
+| 包 | `drone_interfaces` / `drone_bringup` / `drone_control` / `drone_aruco` / `drone_nav` / `drone_mission` / `drone_teleop` / `drone_tools` |
+| 流程 | `flow_f1` ~ `flow_f5` 五个 launch，各有自动验收脚本 |
+| 文档 | `docs/README.md`（上手）、`docs/flows.md`（五套流程）、`docs/troubleshooting.md`（33 条实测坑）、本文件（阶段成果） |
+| 脚本 | `sim.sh` / `start_until_healthy.sh` / `stop_ros.sh` / `run_flow.sh` / `fix_gz_plugins.sh` / `fix_gz_model.sh` 等 |
+| 证据图 | `docs/images/m1_debug_image.png`（检测叠加角点框与坐标轴） |
+

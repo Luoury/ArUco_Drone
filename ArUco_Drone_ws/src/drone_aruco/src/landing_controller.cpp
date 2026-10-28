@@ -68,6 +68,12 @@ public:
     touchdown_alt_ = declare_parameter<double>("touchdown_alt", 0.15);
     safety_alt_ = declare_parameter<double>("safety_alt", 0.12);
     relost_hover_ = declare_parameter<double>("relost_hover", 1.0);
+    // 丢码后重新抬升的目标高度 = max(align_alt, 丢码时高度 + relost_climb_gain)，
+    // 上限 max_search_alt。F5 要求"遮挡期间高度回升 >= 1.0 m"：若只回到固定的
+    // align_alt(2.5)，在 2.0 m 处丢码就只回升 0.5 m，判据必挂。
+    relost_climb_gain_ = declare_parameter<double>("relost_climb_gain", 2.0);
+    final_commit_ = declare_parameter<bool>("final_commit", true);
+    max_search_alt_ = declare_parameter<double>("max_search_alt", 4.0);
     search_timeout_ = declare_parameter<double>("search_timeout", 60.0);
     land_timeout_ = declare_parameter<double>("land_timeout", 40.0);
     prestream_ = declare_parameter<double>("prestream", 2.0);
@@ -253,6 +259,7 @@ private:
     const drone_control::EnuPose p = fc_->localPose();
     search_hold_ = p;
     search_hold_.z = align_alt_;
+    search_target_alt_ = align_alt_;
     RCLCPP_INFO(get_logger(), "[LANDING] 启动：当前位置 (%.2f, %.2f, %.2f)，目标悬停高度 %.2f m",
       p.x, p.y, p.z, align_alt_);
 
@@ -293,9 +300,10 @@ private:
       enter(kStateAlign);
       return;
     }
-    // 爬升到 align_alt 并在原地小幅偏航扫描（位置 + yaw_rate，掩码见 flight_control.hpp）
+    // 爬升到 search_target_alt_（正常 = align_alt；丢码重启时 = 丢码高度 + 回升量）
+    // 并在原地小幅偏航扫描（位置 + yaw_rate，掩码见 flight_control.hpp）
     drone_control::EnuPose hold = search_hold_;
-    hold.z = align_alt_;
+    hold.z = search_target_alt_;
     fc_->publishPositionSetpointWithYawRate(hold, search_yaw_rate_);
 
     const double elapsed =
@@ -409,6 +417,17 @@ private:
 
   void handleMarkerLost(const char * from)
   {
+    // FINAL 阶段（< final_alt）已经是"贴着目标往下压"了：此时码占满画面，
+    // 检测器本来就容易丢（0.15 m 处 tag 已超出 1.74 rad 视场），再回 SEARCH 会
+    // 变成"升到 2.5 m → 再降 → 再丢"的死循环（F5 第二次跑 60 s 里刷了 5 轮）。
+    // 所以此阶段一旦丢码就按最后的对准结果继续降，不再重新搜索。
+    if (final_commit_ && std::string(from) == "FINAL") {
+      RCLCPP_INFO(get_logger(),
+        "[LANDING] FINAL 阶段码丢失（高度 %.2f m），按 final_commit 继续下降，不再回 SEARCH",
+        fc_->localPose().z);
+      publishHorizontalTracking(-final_speed_);
+      return;
+    }
     RCLCPP_WARN(get_logger(), "[LANDING] %s 阶段码丢失，悬停 %.1f s 后回 SEARCH", from,
       relost_hover_);
     const drone_control::EnuPose p = fc_->localPose();
@@ -422,7 +441,12 @@ private:
       if (markerFresh()) {return;}  // 恢复可见就直接留在原阶段
     }
     search_hold_ = p;
-    search_hold_.z = align_alt_;
+    search_target_alt_ = std::min(max_search_alt_,
+        std::max(align_alt_, p.z + relost_climb_gain_));
+    search_hold_.z = search_target_alt_;
+    RCLCPP_WARN(get_logger(),
+      "[LANDING] 丢码高度 %.2f m，重新搜索目标高度 %.2f m（回升 %.2f m）",
+      p.z, search_target_alt_, search_target_alt_ - p.z);
     enter(kStateSearch);
   }
 
@@ -457,6 +481,10 @@ private:
   double touchdown_alt_{0.15};
   double safety_alt_{0.12};
   double relost_hover_{1.0};
+  double relost_climb_gain_{2.0};
+  bool final_commit_{true};
+  double max_search_alt_{4.0};
+  double search_target_alt_{0.0};
   double search_timeout_{60.0};
   double land_timeout_{40.0};
   double prestream_{2.0};

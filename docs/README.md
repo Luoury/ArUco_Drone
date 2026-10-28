@@ -99,7 +99,12 @@ ros2 launch drone_bringup flow_f1.launch.py start_teleop:=true
 - **M4 航点导航 + F3：PASS**。`verify_flow --flow F3` 实测：只发一条 `WAYPOINT` 模式指令，
   三点稳态误差 `0.158 / 0.075 / 0.102 m`（判据 ≤0.35），`elapsed = 30.6 s`（判据 ≤180），
   落地 `final_altitude = -0.04 m` → `[FLOW F3] RESULT: PASS`。
-- M5 全自主 + F4：下一步。
+- **M5 全自主 + F4：PASS**。`verify_flow --flow F4` 实测：全程只有一条 `AUTO` 模式请求，
+  `IDLE → AUTO_WAYPOINT → AUTO_LAND → AUTO_DONE`，`elapsed = 42.5 s`，
+  落点 `final_lateral = 0.04 m`、`final_altitude = -0.03 m` → `[FLOW F4] RESULT: PASS`。
+- **M6 异常处理 + F5：PASS**。`verify_flow --flow F5` 在下降途中由 Gazebo 侧真实遮挡 3.0 s
+  （最长连续无检测 3.00 s），高度 1.85 → 3.72 m（回升 1.87 m），重新对准后降落，
+  `final_lateral = 0.01 m`、`elapsed = 47.0 s` → `[FLOW F5] RESULT: PASS`。
 
 ## 脚本清单
 
@@ -119,6 +124,9 @@ ros2 launch drone_bringup flow_f1.launch.py start_teleop:=true
 | `scripts/dev_run_f1.sh` | M2：起 SITL + `flow_f1.launch.py` + `verify_flow --flow F1`，跑完自动收尾 |
 | `scripts/dev_run_f2.sh` | M3：起 SITL + `flow_f2.launch.py` + `verify_flow --flow F2` |
 | `scripts/dev_run_f3.sh` | M4：起 SITL + `flow_f3.launch.py` + `verify_flow --flow F3` |
+| `scripts/dev_run_f4.sh` | M5：F4 全自主链路验收（`M5_PROBE=1` 同时录设定点） |
+| `scripts/dev_run_f5.sh` | M6：F5 异常处理验收（Gazebo 侧真实遮挡 3 s） |
+| `scripts/run_flow.sh F1..F5` | 五套流程统一入口 |
 | `scripts/trace_alt.py [秒]` | 10 Hz 录高度+模式到 CSV，判断"真掉高"还是"读数跳变" |
 | `scripts/dev_manual_probe.sh` | 起 F2 链路 → 发 `/mission/mode=MANUAL` → 录高度 |
 | `scripts/dev_run_det_probe.sh` / `dev_det_probe.py` | 飞离码上空后逐帧比对"真实偏移 vs 估计偏移"（验相机轴系） |
