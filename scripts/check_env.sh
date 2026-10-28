@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # 环境自检（需求书 §2）：一次性打印所有依赖版本与关键路径，便于排查"环境不对"。
-set -uo pipefail
+# 注意：这里**不能**开 `set -u` —— source /opt/ros/humble/setup.bash 会引用
+# 未定义的 AMENT_TRACE_SETUP_FILES，开了 -u 会直接退出（本脚本第一版就栽在这）。
+set -o pipefail
 
 echo "==== 系统 ===="
 uname -a
@@ -15,7 +17,9 @@ if [ -f /opt/ros/humble/setup.bash ]; then
 else
   echo "未找到 /opt/ros/humble/setup.bash"
 fi
-for pkg in mavros mavros_msgs mavros_extras ros_gz_bridge ros_gz_sim ros_gz_image ros_gz_interfaces cv_bridge; do
+# 运行时真正依赖的包（ros_gz_bridge 已弃用：apt 版是 Fortress ABI，与 Harmonic 的
+# gz-transport13 不兼容，相机/时钟改由本仓库的 drone_bringup/gz_sensor_bridge 直连）
+for pkg in mavros mavros_msgs mavros_extras rclcpp sensor_msgs rosgraph_msgs geometry_msgs tf2 tf2_geometry_msgs cv_bridge std_msgs std_srvs; do
   if ros2 pkg prefix "$pkg" >/dev/null 2>&1; then
     echo "  $pkg: 已安装"
   else
@@ -26,6 +30,16 @@ done
 echo "==== Gazebo ===="
 command -v gz >/dev/null 2>&1 && gz sim --versions 2>/dev/null | head -3 || echo "gz 未安装"
 echo "  gz 路径: $(command -v gz || echo '无')"
+for lib in gz-transport13 gz-msgs10; do
+  if pkg-config --exists "$lib" 2>/dev/null; then
+    echo "  $lib: $(pkg-config --modversion "$lib")"
+  else
+    echo "  $lib: 缺失（drone_bringup 的 gz_sensor_bridge 需要）"
+  fi
+done
+if [ -f /usr/include/ignition/transport11/ignition/transport.hh ] ||    pkg-config --exists ignition-transport11 2>/dev/null; then
+  echo "  警告: 系统里还有 Fortress(ignition) 版的传输库，别用 ros_gz_bridge（ABI 不匹配）"
+fi
 
 echo "==== PX4 ===="
 PX4_DIR="${PX4_DIR:-$HOME/PX4-Autopilot}"

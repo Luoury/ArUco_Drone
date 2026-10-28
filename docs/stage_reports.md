@@ -588,3 +588,30 @@ M6 改动没有破坏前面四套：
 | 脚本 | `sim.sh` / `start_until_healthy.sh` / `stop_ros.sh` / `run_flow.sh` / `fix_gz_plugins.sh` / `fix_gz_model.sh` 等 |
 | 证据图 | `docs/images/m1_debug_image.png`（检测叠加角点框与坐标轴） |
 
+---
+
+## 11. 交付自检（M6 收尾后做的一次完整核对）
+
+| 检查项 | 结果 |
+| --- | --- |
+| `bash scripts/run_flow.sh F1` | 统一入口可用：`=== run_flow: F1 退出码 0（0 = PASS）===`，`[FLOW F1] RESULT: PASS` |
+| `bash scripts/check_env.sh` | 修好 `set -u` 崩溃后完整跑通，输出与实际一致（见下） |
+| 文档交叉引用 | 35 处路径引用与 md 相对链接全部可解析 |
+| 仓库残留 | 删除 `test/`（早期泄漏实验的 4 个临时世界），`.cache/ build/ install/ log/ logs/` 均在 `.gitignore` |
+
+`check_env.sh` 的真实输出（节选）：
+
+```
+/dev/dri: 不存在（走软件渲染，必须用 Ogre1）
+ROS_DISTRO=humble  rclcpp=/opt/ros/humble
+  mavros / mavros_msgs / mavros_extras / cv_bridge: 已安装
+  gz-transport13: 13.5.0      gz-msgs10: 10.3.2
+  警告: 系统里还有 Fortress(ignition) 版的传输库，别用 ros_gz_bridge（ABI 不匹配）
+  PX4: v1.17.0-alpha1-338-gdf42ef84f1（main）
+  PX4_GZ_SIM_RENDER_ENGINE 未设置（脚本 scripts/sim.sh 会自动设成 ogre）
+```
+
+自检本身也踩了一个坑：脚本第一版用 `set -uo pipefail`，`source /opt/ros/humble/setup.bash`
+立刻报 `AMENT_TRACE_SETUP_FILES: unbound variable` 退出，什么都检查不到。改成只 `set -o pipefail`
+并加注释说明原因 —— **这个环境里所有"source ROS 环境"的脚本都不能开 `set -u`**。
+
