@@ -11,8 +11,16 @@ mission_manager:
     manual_altitude: 1.5        # m，按 Space/1 进入 MANUAL 时的起飞高度
     takeoff_tolerance: 0.15     # m，起飞判据容差
     min_altitude: 0.12          # m，低于这个高度还在下降就强制降落（安全条款）
+    manual_max_altitude: 5.0    # m，MANUAL 模式高度上限（速度积分成位置目标时钳位）
     land_timeout: 40.0          # s，等上锁的最长时间
     flow: F1                    # 当前流程标识，写进 /mission/status.flow
+
+    # ---- 视觉链路（M3 起）：mission_manager 只做调度，决策在 landing_controller ----
+    marker_topic: /aruco/detection        # 检测结果（PoseStamped, map）
+    landing_state_topic: /aruco/landing/state   # 降落阶段（String：SEARCH/ALIGN/...）
+    marker_lost_timeout: 0.5    # s，超过这个时间没检测到就认为 marker_visible=false
+    mode_switch_hover: 0.5      # s，切模式前先悬停稳定（需求书 §5.5）
+    landing_start_timeout: 5.0  # s，调用 /aruco/landing/start 的超时
 
 drone_teleop:
   ros__parameters:
@@ -21,3 +29,19 @@ drone_teleop:
     vel_xy: 0.5                 # m/s
     vel_z: 0.4                  # m/s
     yaw_rate: 0.5               # rad/s
+
+# 验收判据（需求书 §8.1；放进 yaml 是为了不在脚本里写死阈值）
+verify_flow:
+  ros__parameters:
+    takeoff_min: 1.2            # m，F1/F2 起飞高度下限
+    final_max: 0.2              # m，F1 最终高度上限
+    crash_alt: 0.5              # m，飞行中低于它算 crash
+    cruise_vel: 0.5             # m/s，模拟遥控用的速度
+    control_rate: 20.0          # Hz，验收脚本自己的循环频率
+    takeoff_timeout: 60.0       # s
+    land_timeout: 45.0          # s
+    status_timeout: 30.0        # s，等 /mission/status
+    f2_lateral_max: 0.25        # m，F2 最终水平误差上限
+    f2_altitude_max: 0.25       # m，F2 最终高度上限
+    f2_flow_timeout: 150.0      # s，F2 全程时间上限
+    f2_offset_time: 2.0         # s，F2 起飞后"手动飞离码"的时长

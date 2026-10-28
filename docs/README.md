@@ -37,7 +37,16 @@ ros2 run drone_control hover_test
 
 一键联调（含健康检查与验收）：
 `bash scripts/dev_run_hover.sh`（M0）、`bash scripts/dev_run_aruco.sh`（M1）、
-`bash scripts/dev_run_f1.sh`（M2 的 F1 流程，自动跑完并打印 `[FLOW F1] RESULT:`）。
+`bash scripts/dev_run_f1.sh`（M2 的 F1 流程）、`bash scripts/dev_run_f2.sh`（M3 的 F2 流程），
+每个都自动跑完并打印 `[FLOW Fx] RESULT:`。
+
+人工试飞 F2（键盘按下 `2` 交给视觉降落；`w/a/s/d/r/f/q/e` 手动飞）：
+
+```bash
+bash ~/ArUco_Drone/scripts/start_until_healthy.sh aruco 3
+source /opt/ros/humble/setup.bash && source ~/ArUco_Drone/ArUco_Drone_ws/install/setup.bash
+ros2 launch drone_bringup flow_f2.launch.py start_teleop:=true
+```
 
 人工试飞 F1（需要真实终端，键盘模式下才看得到按键响应）：
 
@@ -61,6 +70,8 @@ ros2 launch drone_bringup flow_f1.launch.py start_teleop:=true
 | 相机 | 1280×960 @30 Hz，`fx=fy≈539.94`，`cx=640, cy=480`，光轴指向机体 -z |
 | ArUco | `DICT_4X4_50`，id=0，`marker_size=0.487 m`（实测标定值，非名义 0.5） |
 | 参数来源 | 一律 `drone_bringup/config/*.yaml`，代码里不写魔法数字 |
+| 相机轴系 | `x_body=-y_cam, y_body=-x_cam, z_body=-z_cam`（`kOptToFlu`，行列式 +1） |
+| 降落接管 | `mission_manager` 置 HOVER → 等 0.5 s → `/aruco/landing/start`，交接期间不再发 setpoint |
 
 ## 里程碑状态
 
@@ -77,11 +88,14 @@ ros2 launch drone_bringup flow_f1.launch.py start_teleop:=true
     （`m1_frame_check.py` 实测 14 组，无恒定偏置），逐帧噪声再叠加约 2 cm。
     后续在降落控制里用时序滤波（需求书 §7 本来就要做）收敛这一项。
 - **M2 飞控封装 + 键盘 + F1：PASS**。`verify_flow --flow F1` 实测
-  `takeoff_altitude = 2.06 m`（判据 >1.2）、`final_altitude = -0.00 m`（判据 <0.2）、
-  飞行中最低 0.98 m（无 crash）→ `[FLOW F1] RESULT: PASS`。
-  已知现象：OFFBOARD **速度**模式下 `vz=0` 不保高，水平机动时掉高约 1 m；
-  F3 的航点飞行改用**位置**设定点（自带高度保持）后再复核。
-- M3 视觉伺服降落 + F2：下一步。
+  `takeoff_altitude = 1.95 m`（判据 >1.2）、`final_altitude = 0.03 m`（判据 <0.2）、
+  飞行中最低 1.84 m（无 crash）→ `[FLOW F1] RESULT: PASS`。
+  （MANUAL 已改成"速度积分成位置目标"，掉高问题不复存在。）
+- **M3 视觉伺服降落 + F2：PASS**。`verify_flow --flow F2` 实测：从 0.81 m 水平误差
+  接管，`IDLE → ALIGN → DESCEND → FINAL`，`landed = yes`，
+  `final_lateral = 0.01 m`、`final_altitude = -0.01 m`、`elapsed = 31.1 s`
+  （判据 0.25 / 0.25 / 150）→ `[FLOW F2] RESULT: PASS`。
+- M4 航点导航 + F3：下一步。
 
 ## 脚本清单
 
@@ -99,6 +113,10 @@ ros2 launch drone_bringup flow_f1.launch.py start_teleop:=true
 | `scripts/dev_run_hover.sh` | M0 一键联调 + 验收 |
 | `scripts/dev_run_aruco.sh` | M1 一键联调 + 验收（`ARUCO_POSE_TOPIC` 可切位姿源） |
 | `scripts/dev_run_f1.sh` | M2：起 SITL + `flow_f1.launch.py` + `verify_flow --flow F1`，跑完自动收尾 |
+| `scripts/dev_run_f2.sh` | M3：起 SITL + `flow_f2.launch.py` + `verify_flow --flow F2` |
+| `scripts/trace_alt.py [秒]` | 10 Hz 录高度+模式到 CSV，判断"真掉高"还是"读数跳变" |
+| `scripts/dev_manual_probe.sh` | 起 F2 链路 → 发 `/mission/mode=MANUAL` → 录高度 |
+| `scripts/dev_run_det_probe.sh` / `dev_det_probe.py` | 飞离码上空后逐帧比对"真实偏移 vs 估计偏移"（验相机轴系） |
 | `scripts/m1_detect_offline.py` | 离线识别 `arucotag.png` |
 | `scripts/m1_check_detection.py` | 在线精度校验（稳态悬停后再采样） |
 | `scripts/m1_detector_accuracy.py` | 把 EKF 误差与检测器误差分开度量 |

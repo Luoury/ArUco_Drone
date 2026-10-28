@@ -109,10 +109,12 @@ void FlightControl::publishPositionSetpoint(const EnuPose & enu, double yaw_rate
   msg.header.frame_id = "map";
   msg.coordinate_frame = kFrameLocalNed;
   msg.type_mask = kTypeMaskPosition;
-  // ENU(x 东, y 北, z 上) → NED(x 北, y 东, z 下)
-  msg.position.x = enu.y;
-  msg.position.y = enu.x;
-  msg.position.z = -enu.z;
+  // 直接发 ENU：mavros 的 setpoint_raw 插件收到的 position/velocity 就是 ENU，
+  // 由 mavros 自己转成 MAVLink 的 LOCAL_NED（M0 实测：这里再手工转一次会造成
+  // "目标 z=-1.5" → 无人机从 1.28 m 一头扎到 -0.09 m，见 docs/troubleshooting.md）。
+  msg.position.x = enu.x;
+  msg.position.y = enu.y;
+  msg.position.z = enu.z;
   // NED 偏航顺时针为正，故取反；当前掩码忽略 yaw_rate，保留以便后续扫描使用
   msg.yaw_rate = static_cast<float>(-yaw_rate_enu);
   setpoint_pub_->publish(msg);
@@ -125,9 +127,41 @@ void FlightControl::publishVelocitySetpoint(const EnuPose & enu_velocity, double
   msg.header.frame_id = "map";
   msg.coordinate_frame = kFrameLocalNed;
   msg.type_mask = kTypeMaskVelocity;
-  msg.velocity.x = enu_velocity.y;
-  msg.velocity.y = enu_velocity.x;
-  msg.velocity.z = -enu_velocity.z;
+  // 同 position：速度也是 ENU，转换交给 mavros
+  msg.velocity.x = enu_velocity.x;
+  msg.velocity.y = enu_velocity.y;
+  msg.velocity.z = enu_velocity.z;
+  msg.yaw_rate = static_cast<float>(-yaw_rate_enu);
+  setpoint_pub_->publish(msg);
+}
+
+// 带偏航角速度的版本：掩码里 bit11 清零，PX4 才会真的执行 yaw_rate。
+void FlightControl::publishPositionSetpointWithYawRate(const EnuPose & enu, double yaw_rate_enu)
+{
+  mavros_msgs::msg::PositionTarget msg;
+  msg.header.stamp = node_->now();
+  msg.header.frame_id = "map";
+  msg.coordinate_frame = kFrameLocalNed;
+  msg.type_mask = kTypeMaskPositionYawRate;
+  msg.position.x = enu.x;
+  msg.position.y = enu.y;
+  msg.position.z = enu.z;
+  msg.yaw_rate = static_cast<float>(-yaw_rate_enu);
+  setpoint_pub_->publish(msg);
+}
+
+void FlightControl::publishVelocitySetpointWithYawRate(const EnuPose & enu_velocity,
+  double yaw_rate_enu)
+{
+  mavros_msgs::msg::PositionTarget msg;
+  msg.header.stamp = node_->now();
+  msg.header.frame_id = "map";
+  msg.coordinate_frame = kFrameLocalNed;
+  msg.type_mask = kTypeMaskVelocityYawRate;
+  // 同 position：速度也是 ENU，转换交给 mavros
+  msg.velocity.x = enu_velocity.x;
+  msg.velocity.y = enu_velocity.y;
+  msg.velocity.z = enu_velocity.z;
   msg.yaw_rate = static_cast<float>(-yaw_rate_enu);
   setpoint_pub_->publish(msg);
 }

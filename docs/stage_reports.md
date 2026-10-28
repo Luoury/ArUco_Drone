@@ -1,4 +1,4 @@
-# 阶段成果报告（M0 / M1 / M2）
+# 阶段成果报告（M0 / M1 / M2 / M3）
 
 > 本文按里程碑逐阶段记录"做了什么、实测到什么、踩了哪些坑"。
 > 数据全部来自本机真实终端输出（WSL2 Ubuntu 22.04 + PX4 v1.17 SITL + Gazebo Harmonic + ROS 2 Humble），
@@ -253,14 +253,74 @@ real_time_factor: 0.92995854477297035
 
 ---
 
-## 4. 当前状态与下一步
+## 4. M3 — 视觉伺服降落 + F2 流程
+
+### 4.1 交付物
+
+- `drone_aruco/landing_controller`：§5.3 状态机 `IDLE → SEARCH → ALIGN → DESCEND → FINAL → TOUCHDOWN`，以 50 Hz 发 `/mavros/setpoint_raw/local`；服务 `/aruco/landing/start|stop`，10 Hz 发布 `/aruco/landing/state`。
+- `aruco_detector` 增加 EMA 位置平滑（`smooth_alpha: 0.3`），抑制逐帧 PnP 噪声。
+- `mission_manager` 增加 `ARUCO_LAND` 委托：§5.5 的"先置 HOVER、等 0.5 s、再交给新控制器"，交接期间**本节点一个字都不发**，避免双发布者抢话题。
+- `flow_f2.launch.py`（`sim_bringup` + `aruco_detect` + `landing_controller` + `mission_manager`）、`drone_tools/verify_flow --flow F2`、`scripts/dev_run_f2.sh`。
+- MANUAL 模式从"速度设定点"改成"速度积分成位置目标"：位置环自带定高，顺手修掉了 M2 遗留的掉高问题。
+
+### 4.2 F2 验收结果（真实输出）
+
+```
+[healthy] 第 1 次启动成功：IMU 有发布者
+[sim] PX4 运行中 pid=137214   iterations: 2211   real_time_factor: 0.99
+[f2] mavros 已连接（4s）
+[f2] 就绪：mission_manager 就绪（0s）
+[f2] 就绪：降落控制器就绪（0s）
+[f2] 就绪：发布 /aruco/detection（0s）
+[FLOW F2] takeoff_altitude = 1.71 m（用时 9.6 s）
+[FLOW F2] 遥控：前飞 2.0 s（离开码上方，模拟人工操作）
+[FLOW F2] 接管前水平误差 = 0.81 m
+[FLOW F2] 请求模式 ARUCO_LAND（等价于按下 '2'）
+[FLOW F2] marker_detected = yes（收到 478 帧检测，最后一帧水平误差 0.01 m）
+[FLOW F2] landing_states = IDLE → ALIGN → DESCEND → FINAL
+[FLOW F2] landed = yes（18.4 s），final_altitude = -0.01 m，final_lateral = 0.01 m
+[FLOW F2] marker_detected = yes（判据 == yes）→ ok
+[FLOW F2] final_lateral = 0.01 m（判据 <= 0.25）→ ok
+[FLOW F2] final_altitude = -0.01 m（判据 <= 0.25）→ ok
+[FLOW F2] elapsed = 31.06 s（判据 <= 150.00）→ ok
+[FLOW F2] RESULT: PASS
+```
+
+### 4.3 判据对照
+
+| F2 判据 | 要求 | 实测 | 结论 |
+| --- | --- | --- | --- |
+| 检测到码 | 必须 | 478 帧 | ✅ |
+| 最终水平误差 | ≤ 0.25 m | 0.01 m | ✅ |
+| 最终高度 | ≤ 0.25 m | -0.01 m | ✅ |
+| 总耗时 | ≤ 150 s | 31.1 s | ✅ |
+
+回归：F1 在改造 MANUAL 后重跑仍然 PASS，且飞行中最低高度 1.84 m（改造前会掉到 0.98 m）。
+
+### 4.4 三个决定性的坑
+
+**坑 O：ENU 双重转换回归（最惊险）**
+`publishPositionSetpoint` 里又出现了 `msg.position.z = -enu.z`。mavros 收到的就是 ENU，再转一次等于命令"降到地下 1.4 m"，机体 0.3 s 内从 1.4 m 砸到 0.1 m。用 `scripts/trace_alt.py` 同时录 mavros 估计高度与 gz 真值，才确认是"真掉"而不是"读数跳变"。→ 四个 publish 函数一律直接发 ENU。
+
+**坑 P：相机光学系→机体系的 x 轴符号错**
+`kOptToFlu` 第一行写成 `{0, 1, 0}`，导致检测出的码位置在无人机**另一侧**（实测真实偏移 `(-1.09, -0.91)` vs 估计 `(+1.08, -0.87)`），降落控制器于是越飞越远。M1 是悬停在码正上方标定的，x/y 偏移都接近 0，**符号错了也完全看不出来**。→ 改成 `{0,-1,0, -1,0,0, 0,0,-1}`（行列式 +1），并新增 `dev_run_det_probe.sh` 专门做"飞离码上空"的偏移校验，修正后估计偏移 `(-1.02, -0.90)` vs 真实 `(-1.01, -0.92)`，误差约 2 cm。
+
+**坑 Q：`align_abort_tol` 太小导致 ALIGN ↔ SEARCH 死循环**
+0.60 m 的"发散保护"阈值比"飞离码上空"后的正常误差（1~2 m）还小，一进 ALIGN 就被判发散。→ 提到 2.50 m，明确它只兜解算发散；远距离接近交给 ALIGN 的比例速度（`kp_xy * err`，限幅 `max_vel_xy`）。
+
+另外还踩到：`stop_ros.sh` 的模式串出现在调用命令行里会把自己 kill 掉（"无输出、exit 0"）；Python 在 Windows 上写 `.sh` 会带 CRLF（`$'': command not found`）；`ros2 topic pub --once` 刚建发布者就发会丢（要先空转完成 DDS 匹配）。
+
+---
+
+## 5. 当前状态与下一步
 
 | 里程碑 | 状态 |
 | --- | --- |
 | M0 环境打通 | ✅ 完成（悬停 30 s PASS） |
 | M1 视觉检测 | ✅ 完成（id/字典/尺寸标定完成，精度受 EKF 限制已说明） |
 | M2 飞控封装 + 键盘 + F1 | ✅ 完成（F1 PASS） |
-| M3 视觉伺服降落 + F2 | ⏳ 下一步 |
-| M4 航点导航 + F3 / M5 全自主 + F4 / M6 异常处理 + F5 | ⏳ 未开始 |
+| M3 视觉伺服降落 + F2 | ✅ 完成（F2 PASS，落点水平误差 0.01 m） |
+| M4 航点导航 + F3 | ⏳ 下一步 |
+| M5 全自主 + F4 / M6 异常处理 + F5 | ⏳ 未开始 |
 
-代码提交：`712d516`(M0) → `7e62583`(需求书修正) → `8b52c1e`(M1) → M2 见 `git log`。
+代码提交：`712d516`(M0) → `7e62583`(需求书修正) → `8b52c1e`(M1) → `7bb6e6b`(M2) → M3 见 `git log`。

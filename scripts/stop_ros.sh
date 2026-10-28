@@ -9,6 +9,7 @@ PATTERNS=(
   "gz_sensor_bridge"
   "sim_bringup.launch.py"
   "flow_f1.launch.py"
+  "flow_f2.launch.py"
   "hover_test"
   "aruco_detector"
   "landing_controller"

@@ -23,6 +23,11 @@ namespace drone_control
 constexpr std::uint16_t kTypeMaskPosition = 0b0000111111111000U;  // 只用 position
 constexpr std::uint16_t kTypeMaskVelocity = 0b0000111111000111U;  // 只用 vx, vy, vz
 
+/// 需要"扫描（转圈找码）"时用这两个：把 bit11 清零即启用 yaw_rate，bit10 仍为 1 忽略 yaw。
+/// （上面两个常量按需求书固定，不能改；扫描是额外需求，所以另开常量）
+constexpr std::uint16_t kTypeMaskPositionYawRate = 0b0000011111111000U;  // position + yaw_rate
+constexpr std::uint16_t kTypeMaskVelocityYawRate = 0b0000011111000111U;  // velocity + yaw_rate
+
 /// mavlink 坐标系枚举；PX4 不接受 LOCAL_ENU(8)，必须发 LOCAL_NED(1)
 constexpr std::uint8_t kFrameLocalNed = 1U;
 
@@ -69,6 +74,10 @@ public:
   // --- 设定点 -------------------------------------------------------------
   void publishPositionSetpoint(const EnuPose & enu, double yaw_rate_enu);
   void publishVelocitySetpoint(const EnuPose & enu_velocity, double yaw_rate_enu);
+
+  /// 带偏航角速度的设定点（SEARCH 阶段扫描用，掩码见 kTypeMask*YawRate）
+  void publishPositionSetpointWithYawRate(const EnuPose & enu, double yaw_rate_enu);
+  void publishVelocitySetpointWithYawRate(const EnuPose & enu_velocity, double yaw_rate_enu);
 
   /// 以固定频率连续发布同一位置设定点，持续 duration
   bool streamPositionSetpoint(const EnuPose & enu, double yaw_rate_enu,

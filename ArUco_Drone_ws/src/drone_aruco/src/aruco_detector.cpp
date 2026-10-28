@@ -38,7 +38,12 @@ using sensor_msgs::msg::CameraInfo;
 using sensor_msgs::msg::Image;
 
 // 光学系 -> 机体系(FLU)：x_opt(右) -> -y_flu，y_opt(下) -> +x_flu，z_opt(前) -> -z_flu
-const cv::Matx33d kOptToFlu{0.0, 1.0, 0.0,
+// 光学系(OpenCV: x 右, y 下, z 沿光轴) → 机体 FLU(x 前, y 左, z 上)
+//   相机朝机体 -z 看，画面"上"对应机体 +x，画面"右"对应机体 -y：
+//   x_body = -y_cam, y_body = -x_cam, z_body = -z_cam
+// 注意第一行必须是 -1：M1 阶段悬停在码正上方时 x/y 偏移都为 0，这个符号错了也看不出来；
+// M3 飞离码上空后实测"估计偏移 (+1.08, -0.87) vs 真实 (-1.09, -0.91)"才发现 x 反了。
+const cv::Matx33d kOptToFlu{0.0, -1.0, 0.0,
                             -1.0, 0.0, 0.0,
                             0.0, 0.0, -1.0};
 
@@ -55,6 +60,9 @@ public:
     publish_debug_ = declare_parameter<bool>("publish_debug", true);
     detection_frame_ = declare_parameter<std::string>("detection_frame", "map");
     debug_axes_length_ = declare_parameter<double>("debug_axes_length", 0.15);
+    // 需求书 §5.2：位姿做 EMA 平滑（α≈0.3），否则降落时 x/y 抖
+    smooth_alpha_ = declare_parameter<double>("smooth_alpha", 0.3);
+    smooth_reset_timeout_ = declare_parameter<double>("smooth_reset_timeout", 1.0);
     camera_pitch_deg_ = declare_parameter<double>("camera_pitch_deg", 90.0);
     camera_yaw_deg_ = declare_parameter<double>("camera_yaw_deg", 0.0);
     camera_offset_x_ = declare_parameter<double>("camera_offset_x", 0.0);
@@ -314,18 +322,39 @@ private:
     tf2::Quaternion q_map;
     m.getRotation(q_map);
 
+    // EMA 平滑（需求书 §5.2，α≈0.3）：逐帧 PnP 结果的噪声约 2 cm，不滤直接喂给
+    // 降落控制器会让下降段的水平速度抖。超过 smooth_reset_timeout 没有检测到就
+    // 丢弃历史值，避免重新捕获时被上一次的旧位置拖住。
+    cv::Vec3d smooth_p = p_map;
+    tf2::Quaternion smooth_q = q_map;
+    const double stamp_sec = rclcpp::Time(stamp).seconds();
+    if (has_ema_ && (stamp_sec - last_ema_stamp_) <= smooth_reset_timeout_) {
+      smooth_p = cv::Vec3d(
+        smooth_alpha_ * p_map[0] + (1.0 - smooth_alpha_) * ema_p_[0],
+        smooth_alpha_ * p_map[1] + (1.0 - smooth_alpha_) * ema_p_[1],
+        smooth_alpha_ * p_map[2] + (1.0 - smooth_alpha_) * ema_p_[2]);
+      smooth_q = ema_q_.slerp(q_map, smooth_alpha_);
+      smooth_q.normalize();
+    } else {
+      RCLCPP_INFO(get_logger(), "EMA 复位（距上次检测 %.3f s）", has_ema_ ?
+        (stamp_sec - last_ema_stamp_) : -1.0);
+    }
+    ema_p_ = smooth_p;
+    ema_q_ = smooth_q;
+    has_ema_ = true;
+    last_ema_stamp_ = stamp_sec;
+
     PoseStamped out;
     out.header.stamp = stamp;
     out.header.frame_id = detection_frame_;
-    out.pose.position.x = p_map[0];
-    out.pose.position.y = p_map[1];
-    out.pose.position.z = p_map[2];
-    out.pose.orientation.x = q_map.x();
-    out.pose.orientation.y = q_map.y();
-    out.pose.orientation.z = q_map.z();
-    out.pose.orientation.w = q_map.w();
+    out.pose.position.x = smooth_p[0];
+    out.pose.position.y = smooth_p[1];
+    out.pose.position.z = smooth_p[2];
+    out.pose.orientation.x = smooth_q.x();
+    out.pose.orientation.y = smooth_q.y();
+    out.pose.orientation.z = smooth_q.z();
+    out.pose.orientation.w = smooth_q.w();
     detection_pub_->publish(out);
-
     const double lateral = std::hypot(p_body[0], p_body[1]);
     RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
                          "检测到 id=%d：机体系偏移 (%.3f, %.3f, %.3f) m，水平偏 %.3f m，光学距 %.3f m，map=(%.3f, %.3f, %.3f)",
@@ -358,6 +387,14 @@ private:
   bool has_pose_{false};
   std::mutex pose_mutex_;
   size_t frame_count_{0};
+
+  // EMA 平滑状态（smooth_alpha / smooth_reset_timeout 两个参数控制）
+  double smooth_alpha_{0.3};
+  double smooth_reset_timeout_{1.0};
+  bool has_ema_{false};
+  double last_ema_stamp_{0.0};
+  cv::Vec3d ema_p_{0.0, 0.0, 0.0};
+  tf2::Quaternion ema_q_;
 
   rclcpp::Subscription<Image>::SharedPtr image_sub_;
   rclcpp::Subscription<CameraInfo>::SharedPtr info_sub_;

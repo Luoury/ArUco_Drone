@@ -22,6 +22,11 @@
     publish_debug: true
     debug_axes_length: 0.15
 
+    # 位姿 EMA 平滑（需求书 §5.2：α≈0.3）。逐帧 PnP 噪声约 2 cm，
+    # 不滤会让下降段的水平速度抖；超过 smooth_reset_timeout 没检测到就丢弃历史。
+    smooth_alpha: 0.3
+    smooth_reset_timeout: 1.0
+
     # 相机安装：CameraJoint <pose>0 0 0 0 1.5707 0</pose>（正下方）
     camera_pitch_deg: 90.0
     camera_yaw_deg: 0.0

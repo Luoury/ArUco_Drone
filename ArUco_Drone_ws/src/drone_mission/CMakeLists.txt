@@ -15,6 +15,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(mavros_msgs REQUIRED)
 find_package(drone_control REQUIRED)
 find_package(drone_interfaces REQUIRED)
@@ -24,6 +25,7 @@ ament_target_dependencies(mission_manager
   rclcpp
   geometry_msgs
   std_msgs
+  std_srvs
   mavros_msgs
   drone_interfaces
 )

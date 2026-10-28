@@ -16,12 +16,14 @@ F1（纯手动）：起飞 → 飞一圈 → 降落。
 """
 
 import argparse
+import math
 import sys
 import time
 
 import rclpy
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import PoseStamped, Twist
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
 from drone_interfaces.msg import MissionStatus
@@ -48,10 +50,66 @@ class Verifier(Node):
         self.crashed = False
         self.tracking_flight = False
 
+        # F2 用：机体位姿（mavros 发布的是 BEST_EFFORT，必须显式声明，否则一条收不到）
+        self.pose = None
+        self.pose_frames = 0
+        self.marker = None
+        # 最后一帧"检测到位姿"的水平距离（<0 表示从未测到，不能当合格值用）
+        self.marker_lateral = -1.0
+        self.marker_frames = 0
+        self.landing_state = ''
+        self.landing_states = []
+
         self.cmd_pub = self.create_publisher(Twist, '/teleop/cmd', 10)
         self.mode_pub = self.create_publisher(String, '/mission/mode', 10)
         self.status_sub = self.create_subscription(
             MissionStatus, '/mission/status', self.on_status, 10)
+
+        # F2 专用参数（默认值见 drone_bringup/config/flows.yaml 的 verify_flow 段）
+        self.f2_lateral_max = float(p('f2_lateral_max', 0.25).value)
+        self.f2_altitude_max = float(p('f2_altitude_max', 0.25).value)
+        self.f2_flow_timeout = float(p('f2_flow_timeout', 150.0).value)
+        self.f2_offset_time = float(p('f2_offset_time', 2.0).value)
+
+        sensor_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
+        self.pose_sub = self.create_subscription(
+            PoseStamped, '/mavros/local_position/pose', self.on_pose, sensor_qos)
+        self.marker_sub = self.create_subscription(
+            PoseStamped, '/aruco/detection', self.on_marker, sensor_qos)
+        self.landing_sub = self.create_subscription(
+            String, '/aruco/landing/state', self.on_landing_state, 10)
+
+    # ---------- 视觉链路回调 ----------
+
+    def on_pose(self, msg):
+        self.pose = msg
+        self.pose_frames += 1
+
+    def on_marker(self, msg):
+        self.marker = msg
+        self.marker_frames += 1
+        # 水平误差 = 检测到的码位置 与 无人机当前位置 的水平距离
+        if self.pose is not None:
+            dx = self.pose.pose.position.x - msg.pose.position.x
+            dy = self.pose.pose.position.y - msg.pose.position.y
+            self.marker_lateral = math.hypot(dx, dy)
+
+    def on_landing_state(self, msg):
+        if msg.data != self.landing_state:
+            self.landing_state = msg.data
+            self.landing_states.append(msg.data)
+            self.say(f'landing 阶段 → {msg.data}')
+
+    def horizontal_error(self):
+        """无人机与码在水平面上的距离；没有检测结果时用世界原点（码就在 (0,0)）"""
+        if self.pose is None:
+            return -1.0
+        mx, my = 0.0, 0.0
+        if self.marker is not None:
+            mx = self.marker.pose.position.x
+            my = self.marker.pose.position.y
+        return math.hypot(self.pose.pose.position.x - mx,
+                          self.pose.pose.position.y - my)
 
     # ---------- 状态跟踪 ----------
 
@@ -168,6 +226,91 @@ def run_f1(node):
     return passed
 
 
+def run_f2(node):
+    """F2：手动飞到码附近 → 按 '2' → 视觉自动对准降落（需求书 §5.6 F2）。
+
+    判据：最终水平误差 ≤ 0.25 m；最终高度 ≤ 0.25 m；全程 ≤ 150 s。
+    """
+    node.say('开始：F2 手动转视觉降落（起飞 → 飞离码 → ARUCO_LAND → 自动降落）')
+    t_begin = time.monotonic()
+
+    ok, waited = node.wait_until(lambda: node.status is not None, node.status_timeout,
+                                 label='/mission/status')
+    if not ok:
+        node.say('FAIL 原因：收不到 /mission/status（mission_manager 没起？）')
+        return False
+    node.say(f'mission_manager 在线（{waited:.1f} s），当前 mode = {node.status.mode}')
+
+    # ① 起飞
+    node.request_mode('MANUAL')
+    node.tracking_flight = True
+    ok, waited = node.wait_until(lambda: node.altitude() >= node.takeoff_min,
+                                 node.takeoff_timeout, label=f'起飞到 {node.takeoff_min} m')
+    node.say(f'takeoff_altitude = {node.max_altitude:.2f} m（用时 {waited:.1f} s）')
+    if not ok:
+        node.say('FAIL 原因：起飞高度未达标')
+        return False
+
+    # ② "键盘飞到码附近"：这里用与键盘完全相同的 /teleop/cmd 通路，前飞一段制造对准误差
+    node.say(f'遥控：前飞 {node.f2_offset_time:.1f} s（离开码上方，模拟人工操作）')
+    node.spin_for(node.f2_offset_time,
+                  Twist(linear=_vec(node.cruise_vel, 0.0, 0.0)))
+    node.spin_for(1.0)
+    pre_error = node.horizontal_error()
+    node.say(f'接管前水平误差 = {pre_error:.2f} m')
+
+    # ③ 切视觉降落
+    node.say("请求模式 ARUCO_LAND（等价于按下 '2'）")
+    node.request_mode('ARUCO_LAND')
+
+    # ④ 等落地：剩余时间受 150 s 总预算约束
+    remaining = max(1.0, node.f2_flow_timeout - (time.monotonic() - t_begin))
+    ok, waited = node.wait_until(lambda: not node.armed(),
+                                 min(node.land_timeout, remaining),
+                                 label='视觉降落完成（上锁）')
+    node.tracking_flight = False
+    elapsed = time.monotonic() - t_begin
+    # 用"最后一帧检测"算水平误差：落地后相机看不到码，现测位姿距离没有意义
+    final_lateral = node.marker_lateral
+    final_altitude = node.altitude()
+    marker_detected = node.marker_frames > 0
+
+    node.say(f'marker_detected = {"yes" if marker_detected else "no"}'
+             f'（收到 {node.marker_frames} 帧检测，最后一帧水平误差 {final_lateral:.2f} m，'
+             f'位姿帧 {node.pose_frames}）')
+    node.say(f'landing_states = {" → ".join(node.landing_states) or "(空)"}')
+    node.say(f'landed = {"yes" if ok else "no"}（{waited:.1f} s），'
+             f'final_altitude = {final_altitude:.2f} m，'
+             f'final_lateral = {final_lateral:.2f} m，elapsed = {elapsed:.1f} s')
+    if not ok:
+        node.say('FAIL 原因：降落未完成（还没上锁）')
+        return False
+
+    if final_lateral < 0.0:
+        node.say('FAIL 原因：从未测到「码相对无人机的水平误差」（marker_lateral < 0），'
+                 '不能判合格')
+        return False
+
+    checks = [
+        ('marker_detected', 1.0 if marker_detected else 0.0, '==', 1.0),
+        ('final_lateral', final_lateral, '<=', node.f2_lateral_max),
+        ('final_altitude', final_altitude, '<=', node.f2_altitude_max),
+        ('elapsed', elapsed, '<=', node.f2_flow_timeout),
+    ]
+    passed = True
+    for name, value, op, limit in checks:
+        good = (value == limit) if op == '==' else (value <= limit)
+        unit = 's' if name == 'elapsed' else 'm'
+        if name == 'marker_detected':
+            node.say(f'{name} = {"yes" if value else "no"}（判据 == yes）→ '
+                     f'{"ok" if good else "超出"}')
+        else:
+            node.say(f'{name} = {value:.2f} {unit}（判据 {op} {limit:.2f}）→ '
+                     f'{"ok" if good else "超出"}')
+        passed = passed and good
+    return passed
+
+
 def _vec(x, y, z):
     from geometry_msgs.msg import Vector3
     return Vector3(x=float(x), y=float(y), z=float(z))
@@ -183,8 +326,10 @@ def main(argv=None):
     try:
         if args.flow.upper() == 'F1':
             passed = run_f1(node)
+        elif args.flow.upper() == 'F2':
+            passed = run_f2(node)
         else:
-            node.say(f'FAIL 原因：流程 {args.flow} 尚未实现（当前只支持 F1）')
+            node.say(f'FAIL 原因：流程 {args.flow} 尚未实现（当前支持 F1/F2）')
             passed = False
     except KeyboardInterrupt:
         node.request_mode('LAND')

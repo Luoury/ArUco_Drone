@@ -185,3 +185,61 @@
   机动 8 s 掉约 1 m）。
 - 需要定高时用**位置**设定点（位置控制自带高度保持），或用 `takeoffTo` 后的
   位置悬停；F3 航点飞行按位置设定点实现。
+
+## 21. 位置改用位置设定点后一头扎向地面（ENU 双重转换回归）
+
+- 现象：MANUAL/HOVER 一进 OFFBOARD，机体在 0.3 s 内从 1.4 m 掉到 0.1 m，
+  `logs/px4_sitl.log` 里只有 `Takeoff detected` → `Landing detected`，没有 failsafe。
+- 根因：`flight_control.cpp` 的 `publishPositionSetpoint` 又出现了"手工 ENU→NED"
+  （`msg.position.z = -enu.z`）。mavros 的 `setpoint_raw` **收到的就是 ENU**，
+  再转一次等于命令机体降到地下 1.4 m。M1 阶段 `sync.sh` 用旧暂存覆盖新源码时
+  把这处修复回退了（见第 16 条），M3 才暴露。
+- 排查方法：录 `/mavros/local_position/pose` 的 z（`scripts/trace_alt.py`），
+  看是"真掉"还是"读数跳变"；真掉且速率远超 `MPC_Z_VEL_MAX_DN` 就是设定点反了。
+- **做法**：四个 publish* 函数一律直接发 ENU，转换交给 mavros。
+
+## 22. 检测到的码位置系统性偏一边（相机光学系到机体系的 x 轴符号错）
+
+- 现象：无人机飞离码上空 1 m 后，`/aruco/detection` 报的码位置在**另一侧**
+  （实测真实偏移 `(-1.09, -0.91)`，估计 `(+1.08, -0.87)`），降落控制器因此
+  越飞越远，`ALIGN` 与 `SEARCH` 每秒来回跳。
+- 为什么 M1 没发现：M1 是悬停在码正上方测的，x/y 偏移都接近 0，符号错了也看不出来。
+- 根因：`aruco_detector.cpp` 的 `kOptToFlu` 第一行写成 `{0, 1, 0}`。
+  正确关系是 `x_body = -y_cam, y_body = -x_cam, z_body = -z_cam`（相机朝机体 -z 看，
+  画面上方对应机体 +x，画面右方对应机体 -y）。
+- **做法**：`kOptToFlu = {0,-1,0, -1,0,0, 0,0,-1}`（行列式 = +1，是纯旋转）。
+  验证脚本 `scripts/dev_run_det_probe.sh`：飞离码上空后逐帧打印真实偏移与估计偏移。
+
+## 23. `ALIGN` 与 `SEARCH` 每秒来回跳
+
+- 根因：`align_abort_tol` 取 0.60 m，而"飞离码上空"后的正常水平误差就有 1~2 m，
+  一进 `ALIGN` 立刻被判"发散"退回 `SEARCH`，永远进不了 `DESCEND`。
+- **做法**：`align_abort_tol: 2.50`——它只用来兜"解算发散"，"从远处飞过来"是
+  `ALIGN` 的比例速度（`kp_xy * err`，限幅 `max_vel_xy`）的活。
+
+## 24. 在调用 `stop_ros.sh` 的命令行里出现被 kill 的模式串 = 自杀
+
+- `pkill -f "<模式>"` 会匹配到**当前这条 `bash -lc` 的命令行本身**（只要它包含了同一个
+  字符串），表现为命令"没有任何输出、exit 0"，脚本只跑了半截。
+- 同样的问题也出现在 `grep "mission_manager" ...` 之类的收尾命令里。
+- **做法**：把清理/过滤写成脚本文件；必须在命令行里提及时用 `m[a]nager` 这类
+  正则拆分写法绕过自匹配。
+
+## 25. 用 Python 写 `.sh` 会变成 CRLF，bash 报 `$'': command not found`
+
+- Windows 上 `Path.write_text()` 默认把 `
+` 翻成 `
+`，脚本一执行就报
+  `set: pipefail: invalid option name` / `$'': command not found`。
+- **做法**：写脚本一律 `write_text(..., newline='
+')`（或写完后
+  `bytes.replace(b'
+', b'
+')`）。C++/YAML 不受影响，但统一用 LF 更省事。
+
+## 26. `ros2 topic pub --once` 常常丢消息
+
+- 发布者刚建好就 `publish()`，DDS 还没完成匹配，消息直接丢；表现是
+  "明明发了 `/mission/mode`，`mission_manager` 却说没收到"。
+- **做法**：建好发布者后先 `rclpy.spin_once()` 空转 0.5~1 s，再连续发布若干次
+  （见 `scripts/dev_manual_probe.sh`）。

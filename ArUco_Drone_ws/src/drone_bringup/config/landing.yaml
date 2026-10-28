@@ -1,7 +1,7 @@
-# 视觉降落参数（需求书 §5.4 固定参数名与默认值，代码中不得出现魔法数字）
+# 视觉降落参数（需求书 §5.3 固定参数名与默认值，代码中不得出现魔法数字）
 landing_controller:
   ros__parameters:
-    align_alt: 2.5          # SEARCH 阶段爬升高度 [m]
+    align_alt: 2.5          # SEARCH 阶段爬升/悬停高度 [m]
     descend_speed: 0.30     # ALIGN 完成后下降速度 [m/s]
     final_speed: 0.12       # FINAL 阶段下降速度 [m/s]
     lateral_tol: 0.15       # 对准判定的水平误差阈值 [m]
@@ -10,3 +10,22 @@ landing_controller:
     max_vel_xy: 0.6         # 水平速度上限 [m/s]
     lost_timeout: 0.5       # 码丢失多久算丢失 [s]
     search_yaw_rate: 0.3    # SEARCH 阶段偏航扫描角速度 [rad/s]
+
+    # ---- 以下为实现细节参数（同样只在这里出现，代码里不写数字）----
+    control_rate: 50.0      # 控制回路频率 [Hz]（需求书 §7 要求 50 Hz）
+    kp_z: 0.8               # 高度保持增益（速度模式 vz=0 会掉高，必须闭环）
+    max_vz: 0.30            # 高度环限幅 [m/s]
+    align_frames: 10        # 对准需要连续满足的帧数
+    align_abort_tol: 2.50   # 水平误差超过它 = 解算发散，退回 SEARCH 重搜 [m]
+                            # （普通"从远处飞过来"由 ALIGN 的比例速度完成，不靠退状态）
+    final_alt: 0.5          # DESCEND → FINAL 的高度 [m]
+    touchdown_alt: 0.15     # FINAL → TOUCHDOWN 的高度 [m]
+    safety_alt: 0.12        # 低于此高度无条件上锁降落 [m]
+    relost_hover: 1.0       # 码丢失后原地悬停多久再回 SEARCH [s]
+    search_timeout: 60.0    # SEARCH 阶段最长时间，超时安全降落 [s]
+    land_timeout: 40.0      # AUTO.LAND 等上锁的超时 [s]
+    prestream: 2.0          # 接管前预发设定点的时长 [s]
+    takeoff_tolerance: 0.15 # AUTO.TAKEOFF 判定到位的高度容差 [m]
+    takeoff_timeout: 30.0   # AUTO.TAKEOFF 超时 [s]
+    detection_topic: /aruco/detection
+    state_topic: /aruco/landing/state
