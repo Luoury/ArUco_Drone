@@ -1,0 +1,8 @@
+# MAVROS 参数（需求书 §2 / §5.1）
+# 端口契约：本地 bind 14540，发往 PX4 的 14580。老教程的 14557 在本机连不上。
+mavros:
+  ros__parameters:
+    fcu_url: "udp://:14540@127.0.0.1:14580"
+    target_system_id: 1
+    target_component_id: 1
+    # 不配置 gcs_url（默认空 = 关闭地面站转发），云台/相机插件默认关闭。

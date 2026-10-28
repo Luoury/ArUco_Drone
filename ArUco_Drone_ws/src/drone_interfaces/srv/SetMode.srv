@@ -1,0 +1,7 @@
+# 请求切换到指定任务模式（需求书 §5.5）
+string mode
+---
+# 是否切换成功
+bool success
+# 附加说明（失败原因）
+string message

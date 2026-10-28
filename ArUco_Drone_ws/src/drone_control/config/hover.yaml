@@ -1,0 +1,16 @@
+// 参数与 drone_bringup/config/hover.yaml 中的默认值保持一致；
+// 通过 launch 加载 yaml 时可整体覆盖（需求书 §6：可调参数只放在 config/*.yaml）。
+hover_test:
+  ros__parameters:
+    hover_altitude: 1.5      # 悬停高度（ENU z，相对起飞点）[m]
+    hover_duration: 30.0     # 到达高度后保持悬停的时间 [s]
+    altitude_tolerance: 0.15 # 判定"已到高度"的容差 [m]
+    drift_tolerance: 0.30    # 判定"不漂"的最大水平漂移 [m]
+    setpoint_rate: 50.0      # 设定点发布频率 [Hz]（需求书要求 20–50 Hz）
+    prestream_duration: 2.0  # 切 OFFBOARD 前的预发时间 [s]（需求书 §5.3 要求 ≥2 s）
+    connect_timeout: 30.0    # 等 MAVROS 连接的超时 [s]
+    pose_timeout: 10.0       # 等位姿话题的超时 [s]
+    mode_timeout: 10.0       # 切模式 / arm 的服务超时 [s]
+    climb_timeout: 20.0      # 爬升超时 [s]
+    auto_land: true          # 悬停结束后自动切 AUTO.LAND 降落
+    land_timeout: 40.0       # 等降落上锁的超时 [s]

@@ -1,0 +1,16 @@
+# gz_sensor_bridge 参数（Gazebo Harmonic -> ROS 2 自建桥接）。
+# 说明：apt 的 ros_gz_bridge 是 Fortress ABI，连不上 Gazebo 8.10 的
+# gz-transport13，所以由本包自带桥接节点，详见 docs/troubleshooting.md。
+# 这里只放 ROS 侧话题名与 QoS；gz 侧话题名由 launch 依 world/model 拼出。
+gz_sensor_bridge:
+  ros__parameters:
+    ros_clock_topic: /clock
+    ros_image_topic: /camera/image_raw
+    ros_info_topic: /camera/camera_info
+    frame_id: camera_link
+    # best_effort 与 ROS 2 图像的标准 SensorDataQoS 一致，
+    # 在这台 WSL 机器上比 reliable 更稳（避免大帧重传拖慢仿真）。
+    qos_reliability: best_effort
+    qos_depth: 5
+    # 每隔多少秒打印一次相机实际帧率（0 表示不打印）
+    rate_log_period: 5.0
