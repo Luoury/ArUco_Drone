@@ -9,6 +9,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rosgraph_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(gz-transport13 REQUIRED)
 find_package(gz-msgs10 REQUIRED)
 
@@ -22,6 +23,7 @@ ament_target_dependencies(gz_sensor_bridge
   rclcpp
   rosgraph_msgs
   sensor_msgs
+  geometry_msgs
 )
 
 install(

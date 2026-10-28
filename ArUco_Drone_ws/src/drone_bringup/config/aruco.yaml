@@ -1,0 +1,42 @@
+# ArUco 检测参数（唯一来源；代码里不写死任何数值）
+#
+# M1 标定结论（实测，不是猜的）：
+#   * 贴图 arucotag.png 是 354x354、6x6 格（4x4 数据 + 1 格黑边），周边没有白静区；
+#   * 用 6x6 位图在 OpenCV 内置字典里反查，命中 DICT_4X4_50 的 id=0（4X4_100/250/1000 的 id=0 位图相同）；
+#   * 黑框外沿正好铺满 arucotag 模型里 0.5 m x 0.5 m 的 plane，名义边长 = 0.5 m；
+#     但按需求书 §8.2 必须用真值在线标定。稳态悬停 2.00 m 时 solvePnP 解出 2.054 m
+#     （估计/真实 = 1.0268），反解 0.5/1.0268 = 0.487 m。marker_size 每偏 1%，
+#     测距就偏 1%，所以这个数必须实测，不能照抄名义值。
+/**:
+  ros__parameters:
+    dictionary: "DICT_4X4_50"
+    marker_id: 0
+    marker_size: 0.487         # m，2 m 悬停实测标定（见下）
+    detection_frame: "map"
+
+    image_topic: "/camera/image_raw"
+    camera_info_topic: "/camera/camera_info"
+    drone_pose_topic: "/mavros/local_position/pose"
+    detection_topic: "/aruco/detection"
+    debug_topic: "/aruco/debug_image"
+    publish_debug: true
+    debug_axes_length: 0.15
+
+    # 相机安装：CameraJoint <pose>0 0 0 0 1.5707 0</pose>（正下方）
+    camera_pitch_deg: 90.0
+    camera_yaw_deg: 0.0
+    camera_offset_x: 0.0
+    camera_offset_y: 0.0
+    camera_offset_z: 0.0
+
+    # camera_info 未到时的兜底内参（mono_cam: hfov=1.74 rad, 1280x960 → fx=640/tan(0.87)）
+    camera_fx: 539.936
+    camera_fy: 539.936
+    camera_cx: 640.0
+    camera_cy: 480.0
+
+    # 检测器调参（默认值即 OpenCV 推荐值，留在这里是为了以后能只改 yaml）
+    detector_win_min: 5
+    detector_win_max: 23
+    detector_win_step: 10
+    detector_min_perimeter_rate: 0.03

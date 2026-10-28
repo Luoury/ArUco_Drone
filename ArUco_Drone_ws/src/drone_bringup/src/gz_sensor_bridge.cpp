@@ -21,8 +21,10 @@
 #include <gz/msgs/camera_info.pb.h>
 #include <gz/msgs/clock.pb.h>
 #include <gz/msgs/image.pb.h>
+#include <gz/msgs/odometry.pb.h>
 #include <gz/transport/Node.hh>
 
+#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rosgraph_msgs/msg/clock.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
@@ -87,6 +89,12 @@ public:
   {
     enable_clock_ = declare_parameter<bool>("enable_clock", true);
     enable_camera_ = declare_parameter<bool>("enable_camera", true);
+    // 可选：把 gz 的机体里程计（世界系真值）转发成 PoseStamped。
+    // 用途：把"检测器几何精度"与"PX4 EKF 的估计误差"分开验证——
+    // 用真值位姿当 drone_pose_topic 时，检测结果直接反映检测器本身的精度。
+    enable_odom_ = declare_parameter<bool>("enable_odom", false);
+    const auto gz_odom_topic = declare_parameter<std::string>("gz_odom_topic", "");
+    const auto ros_odom_topic = declare_parameter<std::string>("ros_odom_topic", "/gz/drone_pose");
 
     const auto gz_clock_topic = declare_parameter<std::string>("gz_clock_topic", "/clock");
     const auto gz_image_topic = declare_parameter<std::string>("gz_image_topic", "");
@@ -157,8 +165,19 @@ public:
       }
     }
 
-    if (!enable_clock_ && !enable_camera_) {
-      RCLCPP_WARN(get_logger(), "时钟与相机都被关闭，本节点不做任何事");
+    if (enable_odom_ && !gz_odom_topic.empty()) {
+      odom_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>(ros_odom_topic, qos);
+      if (!gz_node_.Subscribe(gz_odom_topic, &GzSensorBridge::onOdometry, this)) {
+        RCLCPP_ERROR(get_logger(), "订阅 gz 里程计失败: %s", gz_odom_topic.c_str());
+      } else {
+        RCLCPP_INFO(
+          get_logger(), "桥接 gz %s -> ROS %s（真值位姿，供精度验证）",
+          gz_odom_topic.c_str(), ros_odom_topic.c_str());
+      }
+    }
+
+    if (!enable_clock_ && !enable_camera_ && !enable_odom_) {
+      RCLCPP_WARN(get_logger(), "时钟、相机、里程计都被关闭，本节点不做任何事");
     }
   }
 
@@ -242,14 +261,35 @@ private:
     info_pub_->publish(out);
   }
 
+  void onOdometry(const gz::msgs::Odometry & msg)
+  {
+    if (!odom_pub_) {
+      return;
+    }
+    geometry_msgs::msg::PoseStamped out;
+    out.header.stamp.sec = msg.header().stamp().sec();
+    out.header.stamp.nanosec = msg.header().stamp().nsec();
+    out.header.frame_id = "map";
+    out.pose.position.x = msg.pose().position().x();
+    out.pose.position.y = msg.pose().position().y();
+    out.pose.position.z = msg.pose().position().z();
+    out.pose.orientation.x = msg.pose().orientation().x();
+    out.pose.orientation.y = msg.pose().orientation().y();
+    out.pose.orientation.z = msg.pose().orientation().z();
+    out.pose.orientation.w = msg.pose().orientation().w();
+    odom_pub_->publish(out);
+  }
+
   bool enable_clock_{false};
   bool enable_camera_{false};
+  bool enable_odom_{false};
   std::string frame_id_{"camera_link"};
 
   gz::transport::Node gz_node_;
   rclcpp::Publisher<rosgraph_msgs::msg::Clock>::SharedPtr clock_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr info_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr odom_pub_;
   rclcpp::TimerBase::SharedPtr rate_timer_;
   size_t image_count_{0};
 };

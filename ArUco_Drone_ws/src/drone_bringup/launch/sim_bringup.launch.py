@@ -33,11 +33,14 @@ def generate_launch_description():
     start_gz_bridge = LaunchConfiguration('start_gz_bridge')
     start_mavros = LaunchConfiguration('start_mavros')
     start_camera = LaunchConfiguration('start_camera')
+    start_odom = LaunchConfiguration('start_odom')
 
     gz_camera_head = ["'/world/' + '", world, "' + '/model/' + '", model,
                       "' + '/link/camera_link/sensor/camera'"]
     gz_image_topic = PythonExpression(gz_camera_head + [" + '/image'"])
     gz_info_topic = PythonExpression(gz_camera_head + [" + '/camera_info'"])
+    gz_odom_topic = PythonExpression(
+        ["'/model/' + '", model, "' + '/odometry_with_covariance'"])
 
     declared = [
         DeclareLaunchArgument('use_sim_time', default_value='true',
@@ -53,6 +56,8 @@ def generate_launch_description():
                               description='是否启动 MAVROS'),
         DeclareLaunchArgument('start_camera', default_value='true',
                               description='是否桥接相机图像（排查时可先关掉）'),
+        DeclareLaunchArgument('start_odom', default_value='true',
+                              description='是否桥接机体真值位姿到 /gz/drone_pose（精度验证用）'),
     ]
 
     gz_sensor_bridge = Node(
@@ -65,9 +70,11 @@ def generate_launch_description():
             {
                 'enable_clock': start_gz_bridge,
                 'enable_camera': start_camera,
+                'enable_odom': start_odom,
                 'gz_clock_topic': '/clock',
                 'gz_image_topic': gz_image_topic,
                 'gz_info_topic': gz_info_topic,
+                'gz_odom_topic': gz_odom_topic,
                 'frame_id': 'camera_link',
             },
         ],

@@ -26,6 +26,10 @@ PID_FILE="$LOG_DIR/px4_sitl.pid"
 # 约 3.7 MB（gz sim RSS 以 ~105 MB/s 增长，90 s 撑爆 WSL）。
 # 启动前用 scripts/fix_gz_plugins.sh 把清单换成仓库里的安全版本。
 GZ_PLUGIN_FIX="${GZ_PLUGIN_FIX:-$(dirname "$0")/fix_gz_plugins.sh}"
+# gz 模型：x500_mono_cam_down → x500 → x500_base 的 include(merge=true) 链会在 spawn 时
+# 丢掉 base_link 上的 4 个传感器（PX4 于是报 Accel/Gyro/baro/compass missing，无法 arm）。
+# 启动前用 scripts/fix_gz_model.sh 把模型展平并让 PX4 用展平版。
+GZ_MODEL_FIX="${GZ_MODEL_FIX:-$(dirname "$0")/fix_gz_model.sh}"
 
 usage() {
   sed -n '2,20p' "$0"
@@ -52,11 +56,20 @@ start() {
   if [ -f "$GZ_PLUGIN_FIX" ]; then
     bash "$GZ_PLUGIN_FIX" apply >/dev/null 2>&1 || true
   fi
+  if [ -f "$GZ_MODEL_FIX" ]; then
+    bash "$GZ_MODEL_FIX" apply >/dev/null 2>&1 || true
+  fi
   local pid
   pid="$(px4_pid)"
   if [ -n "$pid" ]; then
     echo "[sim] PX4 已在运行 (pid=$pid)，先 stop 再 start"
     return 1
+  fi
+  # PX4 不在了但 gz 还活着（上次被外部终止留下的孤儿 gz 很常见）：
+  # 这种状态下 PX4 会打印 "gazebo already running world" 并挂到一个没有无人机的旧世界上。
+  if pgrep -f "gz sim" >/dev/null 2>&1; then
+    echo "[sim] 检测到没有 PX4 的孤儿 gz，先清理"
+    hard_clean
   fi
   if [ ! -x "$BUILD_DIR/bin/px4" ]; then
     echo "[sim] 找不到 $BUILD_DIR/bin/px4，请先在 $PX4_DIR 执行 make px4_sitl" >&2
@@ -122,13 +135,32 @@ stop() {
   fi
   rm -f "$PID_FILE"
 
-  # 残留的 gz 进程一并清理（只在明确要停仿真时做）
-  if pgrep -f "gz sim" >/dev/null 2>&1; then
-    echo "[sim] 清理残留 gz 进程"
-    pkill -f "gz sim" 2>/dev/null || true
-    sleep 1
-  fi
+  # 残留的 gz / px4 一并清掉。必须按 /proc 逐个匹配再 kill：
+  # 用 pkill -f 时，只要调用方的命令行里出现同样的字面量，就会把调用方自己杀掉。
+  hard_clean
   echo "[sim] 已停止"
+}
+
+# 扫描 /proc 找出残留的仿真进程并强杀，直到 gz 确实消失
+hard_clean() {
+  local p cmd n=0
+  for p in /proc/[0-9]*; do
+    cmd="$(tr '\0' ' ' <"$p/cmdline" 2>/dev/null)" || continue
+    case "$cmd" in
+      *"gz sim"*|*"bin/px4 -d"*)
+        kill -9 "${p#/proc/}" 2>/dev/null && n=$((n + 1))
+        ;;
+    esac
+  done
+  if [ "$n" -gt 0 ]; then
+    echo "[sim] 强杀 $n 个残留仿真进程"
+  fi
+  for _ in $(seq 1 15); do
+    if ! pgrep -f "gz sim" >/dev/null 2>&1 && ! pgrep -f "bin/px4 -d" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
 }
 
 status() {

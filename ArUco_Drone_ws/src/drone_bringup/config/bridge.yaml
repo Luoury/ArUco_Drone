@@ -7,6 +7,8 @@ gz_sensor_bridge:
     ros_clock_topic: /clock
     ros_image_topic: /camera/image_raw
     ros_info_topic: /camera/camera_info
+    # 机体真值位姿（gz 世界系）：只用于把"检测器精度"与"EKF 估计误差"分开验证
+    ros_odom_topic: /gz/drone_pose
     frame_id: camera_link
     # best_effort 与 ROS 2 图像的标准 SensorDataQoS 一致，
     # 在这台 WSL 机器上比 reliable 更稳（避免大帧重传拖慢仿真）。

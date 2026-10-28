@@ -11,8 +11,10 @@ WS="$ROOT/ArUco_Drone_ws"
 mkdir -p "$ROOT/scripts" "$ROOT/logs" "$WS/src"
 
 if [ -d "$STAGE/scripts" ]; then
-  cp -f "$STAGE"/scripts/*.sh "$ROOT/scripts/"
-  chmod +x "$ROOT"/scripts/*.sh
+  cp -f "$STAGE"/scripts/*.sh "$ROOT/scripts/" 2>/dev/null || true
+  cp -f "$STAGE"/scripts/*.py "$ROOT/scripts/" 2>/dev/null || true
+  cp -f "$STAGE"/scripts/*.md "$ROOT/scripts/" 2>/dev/null || true
+  chmod +x "$ROOT"/scripts/*.sh "$ROOT"/scripts/*.py 2>/dev/null || true
 fi
 
 if [ -d "$STAGE/src" ]; then
@@ -22,6 +24,12 @@ fi
 if [ -d "$STAGE/test" ]; then
   mkdir -p "$ROOT/test"
   cp -f "$STAGE"/test/*.sdf "$ROOT/test/" 2>/dev/null || true
+fi
+
+if [ -d "$STAGE/docs" ]; then
+  mkdir -p "$ROOT/docs/images"
+  cp -f "$STAGE"/docs/*.md "$ROOT/docs/" 2>/dev/null || true
+  cp -f "$STAGE"/docs/images/*.png "$ROOT/docs/images/" 2>/dev/null || true
 fi
 
 echo "[sync] 完成 -> $WS/src"
