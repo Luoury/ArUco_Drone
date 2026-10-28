@@ -239,7 +239,7 @@ M0 通过并向我汇报后停止。
                      └─────────────┘
 ```
 
-控制律（全部用 ENU，内部统一，只在发布时转 NED）：
+控制律（全部用 ENU，接口一律 ENU；ENU→NED 由 mavros 完成，代码里不要再转一次）：
 
 - 像素误差 → 速度：`vx = clamp(kp_xy * (cx - u)/fx * alt, ±0.6)`，`vy` 同理（`alt` 是当前高度，做尺度归一化，否则高空时增益过大）。
 - 偏航：把码的朝向对齐，或者降落阶段干脆锁定偏航（`yaw_rate = 0`），**推荐锁偏航**，简单稳。
@@ -326,12 +326,18 @@ string message
 
 ### 6.4 三个必须记住的坑（写进代码注释）
 
-1. **ENU / NED 符号相反**：`/mavros/local_position/pose` 是 ENU（z 向上），而 `/mavros/setpoint_raw/local` 在 `FRAME_LOCAL_NED` 下是 **NED（z 向下）**。下降指令 `vz = +0.30`（NED 正下），别写成 `-0.30` 然后发现无人机往天上冲。统一在 `drone_control` 内做转换，接口对外只用 ENU。
+1. **ENU / NED 转换（M0 实测修正）**：`/mavros/local_position/pose` 是 ENU（z 向上）；`/mavros/setpoint_raw/local` 收的**同样是 ENU**——mavros 内部会换算成 MAVLink 的 `FRAME_LOCAL_NED` 再发出去。所以**不要在节点里手工做 ENU→NED**（`x=enu.y; y=enu.x; z=-enu.z`），否则双重取反：实测把 1.5 m 的悬停目标发成 `z=-1.5` 时，飞行器从 1.28 m 直接扎到 -0.09 m；改成原样发 ENU 后立刻收敛到 1.41 m。下降指令因此写成 `vz = -0.30`（ENU 向下为负）。
 2. **setpoint 掩码**：
    - 速度控制：`type_mask = 0b0000111111000111`（忽略位置/加速度/力/yaw，使用 `vx,vy,vz` + `yaw_rate`）
    - 位置控制：`type_mask = 0b0000111111111000`（忽略速度/加速度/力，使用 `position` + `yaw_rate`）
    - 掩码和填充字段必须一致，否则 PX4 会静默忽略你的一半指令。
 3. **OFFBOARD 的前置条件**：必须先以 ≥2 Hz 持续发 setpoint（建议 20–50 Hz），再调 `SetMode OFFBOARD`、再 `arming`。顺序错了 PX4 直接拒绝，且错误码不明显。固定节奏：发 2 s setpoint → 切 OFFBOARD → 等状态回读 → arming → 等 `armed==true`。
+
+4. **本机 OFFBOARD 无法从地面起飞（M0 实测）**：PX4 v1.17 SITL 在 OFFBOARD 下即使已 armed，电机也停在怠速（实测 `motor_speed` 恒为 151 rad/s，位置/速度设定点都不出力）；而 `AUTO.TAKEOFF` 正常（飞到 2.5 m 稳定悬停）。故起飞段用 `AUTO.TAKEOFF`，离地后再按上面的固定节奏交接 OFFBOARD，已封装在 `drone_control::takeoffTo()`。
+
+5. **arm 前先设 `NAV_DLL_ACT=0`**：默认值会让 `HealthAndArmingChecks` 以 `Preflight Fail: No connection to the GCS` 阻塞解锁。`scripts/set_px4_param.py NAV_DLL_ACT 0` 或 QGC/`mavros_msgs/ParamSetV2` 设置，改完 PX4 会打印 `Ready for takeoff!`。
+
+6. **本机 Gazebo 侧两个已排除的坑**：① apt 的 `ros_gz_bridge` 链接的是 Fortress ABI（`libignition-transport11`），与 gz sim 8 的 `gz-transport13` 互不可见（`gz topic -i` 永远 `No subscribers`），已改用自研 `drone_bringup/gz_sensor_bridge`；② PX4 的 `GstCameraSystem` 插件每帧泄漏一个图像缓冲（约 105 MB/s，WSL 会被拖死），已用 `drone_bringup/config/gz_server.config` 覆盖 PX4 的 `server.config`（`scripts/fix_gz_plugins.sh apply`）。
 
 ---
 
