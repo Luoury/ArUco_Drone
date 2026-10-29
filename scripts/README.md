@@ -47,7 +47,7 @@
 | `probe_motors.sh` | 采样执行器指令（`command/motor_speed`），判断 PX4 有没有真的给电机出力 |
 | `offboard_probe.py` | 直接用 rclpy 发 `/mavros/setpoint_raw/local`，验证位置/速度设定点是否生效 |
 | `dev_offboard_probe.sh` | 起链路 + 跑一次 `offboard_probe.py` |
-| `dev_m0_hover.sh` / `dev_run_hover.sh` | M0 时期的悬停测试 |
+| `dev_run_hover.sh` | 在已健康的 SITL 上跑一次 `hover_test`（起飞 1.5 m 悬停 30 s） |
 | `dev_run_aruco.sh` | 起链路 + 只跑检测节点（M1 精度验证用） |
 | `m1_check_detection.py` | 等稳态悬停后采 15 s，统计检测 vs 真值的三维/水平/垂直误差 |
 | `m1_detector_accuracy.py` | 把"检测误差"和"EKF 估计误差"分开量（输出偏置与扣除偏置后的误差） |
