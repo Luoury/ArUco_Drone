@@ -29,5 +29,5 @@ for i in $(seq 1 25); do
   fi
 done
 
-timeout 90 python3 "$ROOT/scripts/offboard_probe.py" "$MODE" "$TARGET" $EXTRA
+timeout 90 python3 "$ROOT/scripts/diagnostics/offboard_probe.py" "$MODE" "$TARGET" $EXTRA
 echo "[dev_offboard_probe] 完成"

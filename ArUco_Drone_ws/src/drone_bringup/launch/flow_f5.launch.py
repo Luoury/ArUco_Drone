@@ -9,7 +9,7 @@
       → mission_manager（唯一调度方：收到 AUTO 后先委托航点，再委托视觉降落）
 
 全程零人工输入：一条 AUTO 指令 → 起飞 → 3 个航点 → 回码上方 → 搜码 → 降落上锁。
-自动验收：scripts/dev_run_f5.sh 用 verify_flow --flow F5 发同一条 AUTO 指令。
+自动验收：scripts/run_f5.sh 用 verify_flow --flow F5 发同一条 AUTO 指令。
 """
 
 import os

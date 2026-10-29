@@ -3,7 +3,7 @@
 
 M0 用来确认"桥接过来的图不是全黑"——只是能收到消息不等于真的在渲染。
 
-用法：source /opt/ros/humble/setup.bash && python3 scripts/camera_check.py
+用法：source /opt/ros/humble/setup.bash && python3 scripts/diagnostics/camera_check.py
 """
 
 import sys

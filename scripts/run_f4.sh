@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # F4 流程一键跑：起 SITL（带健康检查）→ 起 flow_f4.launch.py → 跑 verify_flow --flow F4。
-# 用法：bash dev_run_f4.sh
+# 用法：bash run_f4.sh
 #
 # 注意：本脚本里不要用 set -u（source /opt/ros/humble/setup.bash 在 set -u 下会
 # 报 AMENT_TRACE_SETUP_FILES: unbound variable 直接退出）。
@@ -60,7 +60,7 @@ echo "=== [3/3] 跑 verify_flow F4 ==="
 PROBE_PID=""
 if [ "${M5_PROBE:-0}" = "1" ]; then
   echo "[f4] 启动 setpoint/高度探针（m5_probe.py）"
-  setsid nohup python3 "$ROOT/scripts/m5_probe.py" 200 > /tmp/f4_probe.log 2>&1 < /dev/null &
+  setsid nohup python3 "$ROOT/scripts/diagnostics/m5_probe.py" 200 > /tmp/f4_probe.log 2>&1 < /dev/null &
   PROBE_PID=$!
 fi
 set +e

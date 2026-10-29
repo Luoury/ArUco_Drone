@@ -139,14 +139,14 @@
 - `pkill -f <模式>` / `pgrep -f <模式>` 若模式字面量出现在当前命令行里，会把自己
   那条 shell 一起杀掉（表现为没有任何输出、exit 0）。清理逻辑一律写进脚本。
 
-## 16. 旧暂存覆盖新源码 / 同步脚本把自己写坏
+## 16. 旧副本覆盖新源码
 
-- 无条件 `cp -rf` 同步曾把 M0 末期刚写的 `takeoffTo` 覆盖成旧版本，代码里搜不到、
-  但 `install/` 的编译产物里还能 `nm` 出符号 —— 这是"源码丢了但程序还能跑"的假象。
-  **做法**：只覆盖更新的文件（`cp -u`），要回退时显式 `SYNC_FORCE=1`。
-- `sync.sh` 本身也在被同步目录里，就地 `cp` 覆盖等于边执行边截断，bash 报
-  `unexpected EOF while looking for matching '"'`，**一个文件都不会同步成功**。
-  **做法**：先写临时名再 `mv`（换目录项，正在执行的 bash 仍持旧 inode）。
+- 跨文件系统（例如从 Windows 目录往 WSL 里搬）无条件 `cp -rf`，会把刚改的代码覆盖成旧版本：
+  代码里搜不到某个函数，但 `install/` 的产物里还能 `nm` 出符号 —— 即"源码丢了但程序还能跑"。
+  **做法**：只覆盖更新的文件（`cp -u`）；确实要回退时显式指定强制覆盖。
+- 就地覆盖"正在执行的脚本"等于边执行边截断，bash 报
+  `unexpected EOF while looking for matching` ，一个文件都不会复制成功。
+  **做法**：先写临时文件名再 `mv`（换目录项，正在执行的 bash 仍持有旧 inode）。
 
 ## 17. `ament_target_dependencies` 链不上 drone_control
 
@@ -192,9 +192,9 @@
   `logs/px4_sitl.log` 里只有 `Takeoff detected` → `Landing detected`，没有 failsafe。
 - 根因：`flight_control.cpp` 的 `publishPositionSetpoint` 又出现了"手工 ENU→NED"
   （`msg.position.z = -enu.z`）。mavros 的 `setpoint_raw` **收到的就是 ENU**，
-  再转一次等于命令机体降到地下 1.4 m。M1 阶段 `sync.sh` 用旧暂存覆盖新源码时
+  再转一次等于命令机体降到地下 1.4 m。M1 阶段用旧副本覆盖源码时
   把这处修复回退了（见第 16 条），M3 才暴露。
-- 排查方法：录 `/mavros/local_position/pose` 的 z（`scripts/trace_alt.py`），
+- 排查方法：录 `/mavros/local_position/pose` 的 z（`scripts/diagnostics/trace_alt.py`），
   看是"真掉"还是"读数跳变"；真掉且速率远超 `MPC_Z_VEL_MAX_DN` 就是设定点反了。
 - **做法**：四个 publish* 函数一律直接发 ENU，转换交给 mavros。
 
@@ -208,7 +208,7 @@
   正确关系是 `x_body = -y_cam, y_body = -x_cam, z_body = -z_cam`（相机朝机体 -z 看，
   画面上方对应机体 +x，画面右方对应机体 -y）。
 - **做法**：`kOptToFlu = {0,-1,0, -1,0,0, 0,0,-1}`（行列式 = +1，是纯旋转）。
-  验证脚本 `scripts/dev_run_det_probe.sh`：飞离码上空后逐帧打印真实偏移与估计偏移。
+  验证脚本 `scripts/diagnostics/dev_run_det_probe.sh`：飞离码上空后逐帧打印真实偏移与估计偏移。
 
 ## 23. `ALIGN` 与 `SEARCH` 每秒来回跳
 
@@ -245,7 +245,7 @@
 - 发布者刚建好就 `publish()`，DDS 还没完成匹配，消息直接丢；表现是
   "明明发了 `/mission/mode`，`mission_manager` 却说没收到"。
 - **做法**：建好发布者后先 `rclpy.spin_once()` 空转 0.5~1 s，再连续发布若干次
-  （见 `scripts/dev_manual_probe.sh`）。
+  （见 `scripts/diagnostics/dev_manual_probe.sh`）。
 
 ## 27. `/waypoint/progress` 的 dwell 永远到不了阈值（验收采不到稳态误差）
 
@@ -273,7 +273,7 @@
 
 **现象**：降落/悬停时高度以 ~8 s 为周期在 0.8~1.9 m 之间来回走，指令下降但实际几乎不降。
 
-**判定**：直接听设定点（本仓库 `scripts/m5_probe.py`，1 Hz 打印 `type_mask / position.z / velocity.z`）：
+**判定**：直接听设定点（本仓库 `scripts/diagnostics/m5_probe.py`，1 Hz 打印 `type_mask / position.z / velocity.z`）：
 
 ```
 mask=4039  vz=-0.300   ← 速度掩码 0b0000111111000111
@@ -286,17 +286,15 @@ mask=4088  pz= 2.000   ← 位置掩码 0b0000111111111000
 
 **修法**：① `waypoint_nav` 的 `handover_grace`（0.5 s）之后再不发设定点；② `mission_manager` 每次交接控制权前显式 `callTrigger("/waypoint/stop")`。原则：**OFFBOARD 期间发设定点的节点必须全局唯一**。
 
-### 30. `sync.sh` 报"完成"但文件没更新
+### 30. 用文件时间戳判断"是否需要复制"会漏掉改动
 
-**现象**：改了 Windows 暂存目录里的脚本，`bash scripts/sync.sh` 打印"完成"，但 WSL 里仍是旧版本（某次因此白跑一轮 F4）。
+**现象**：脚本打完"同步完成"，目标目录里却还是旧版本（曾因此白跑一轮 F4）。
 
-**原因**：`/mnt/c` 是 DrvFs，mtime 有秒级/时区误差，`cp -u` / `-nt` 判断把它判成"更旧"而跳过。
+**原因**：`/mnt/c` 是 DrvFs，mtime 有秒级/时区误差，`cp -u` 的 `-nt` 判断把刚改过的文件当成"更旧"而跳过。
 
-**修法**：同步脚本改用 `cmp -s` 比内容、`rsync -a --checksum` 同步源码目录；`SYNC_FORCE=1` 才无条件覆盖。跨文件系统的"已同步"必须由内容比较背书。
+**修法**：跨文件系统比较必须看**内容**（`cmp -s` / `rsync -a --checksum`），而不是时间戳；
+"已同步"这句话只能由内容比较背书。
 
-**验证**：`grep -c 新加的字符串 <目标文件>` 应为非零。
-
----
 
 ### 31. `gz service create` 返回成功但实体不存在
 

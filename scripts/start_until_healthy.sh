@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 启动 SITL 并校验 IMU 是否真的在发数据；坏状态就重启重试。
-# 背景：本机的 gz 会话偶发"模型起来了但没有传感器发布者"，PX4 会因此 preflight 失败、mavros 收不到位姿。
+# 背景：本机 Gazebo 偶发"模型起来了但没有传感器发布者"，PX4 会因此 preflight 失败、mavros 收不到位姿。
 set -o pipefail
 
 ROOT=/home/luosury/ArUco_Drone

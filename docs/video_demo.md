@@ -123,11 +123,9 @@ ros2 run drone_tools record_video --ros-args \
       <update_rate>10</update_rate>
 ```
 
-改完必须**重新 sync 并重启仿真**（模型是启动时从文件读的）：
+改完必须**重启仿真**（模型是启动时从文件读入的，热改无效）：
 
 ```bash
-# 改 Windows 侧暂存文件后
-bash scripts/sync.sh
 bash scripts/sim.sh stop && bash scripts/sim.sh start aruco
 ```
 

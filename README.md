@@ -163,7 +163,7 @@ COM_OBL_RC_ACT = 切回定高        # 失联时不要"继续执行"
 ### 上机前按这个顺序验证（每步过了再下一步）
 
 1. **地面定点**：`/mavros/state` 的 `connected=true`，且 `/mavros/local_position/pose` 有数据、`z` 不漂 → 说明 EKF 有位姿；
-2. **2 m 悬停看检测**：`/aruco/detection` 位姿稳定（对应仿真里的 `scripts/m1_check_detection.py`）；
+2. **2 m 悬停看检测**：`/aruco/detection` 位姿稳定（对应仿真里的 `scripts/diagnostics/m1_check_detection.py`）；
 3. **半程降落**：把 `align_alt` 改到 1.5、`descend_speed` 改到 0.15，试一次 `ARUCO_LAND`；
 4. **完整链路**：最后才放开 `AUTO`（航点 + 搜码 + 降落）。
 

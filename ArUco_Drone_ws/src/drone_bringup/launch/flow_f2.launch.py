@@ -8,7 +8,7 @@
       → mission_manager（模式调度，按 '2' 切 ARUCO_LAND 时把控制权交给 landing_controller）
 
 人工试飞：加 start_teleop:=true，起飞后飞到码附近，按 '2' 后就不用再管。
-自动验收：scripts/dev_run_f2.sh 会用 verify_flow 直接发同样的模式请求。
+自动验收：scripts/run_f2.sh 会用 verify_flow 直接发同样的模式请求。
 """
 
 import os

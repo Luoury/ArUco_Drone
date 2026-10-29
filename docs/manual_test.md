@@ -13,7 +13,7 @@
 | --- | --- | --- | --- |
 | **图像窗口（推荐）** | `bash scripts/manual_demo.sh view` | 相机原始画面 + 检测叠加（绿色角点框、RGB 坐标轴、`id=0 z_cam=1.90m frame=3800`） | 稳定，实测多次 |
 | **Gazebo 3D** | `bash scripts/manual_demo.sh gui` | 3D 世界：无人机、地面黑色码板、影子、Entity Tree | 可用；WSLg 是远程渲染，偶尔窗口需要拖一下/缩放一下才重绘 |
-| **抓帧存 PNG（保底）** | `python3 scripts/m1_save_debug.py /tmp/shot.png` | 单帧 `/aruco/debug_image` 存成文件 | 100% 可靠，无窗口依赖 |
+| **抓帧存 PNG（保底）** | `python3 scripts/diagnostics/m1_save_debug.py /tmp/shot.png` | 单帧 `/aruco/debug_image` 存成文件 | 100% 可靠，无窗口依赖 |
 | **X server（可选）** | 见 §6 | 与 Gazebo 3D 相同，但走 MobaXterm 自带的 X.Org，不经过 WSLg 的远程桌面通道 | 实测可正常渲染（见 §6） |
 
 两种窗口都可以随时关掉，**不影响仿真**（GUI 是独立进程，连的是正在跑的 gz server）。
@@ -260,7 +260,7 @@ gz sim -g --render-engine ogre
 | 文件 | 用途 |
 | --- | --- |
 | `scripts/manual_demo.sh` | 本指南用到的全部子命令（start/gui/view/teleop/status/stop） |
-| `scripts/m1_save_debug.py` | 保底方案：把一帧 `/aruco/debug_image` 存成 PNG |
+| `scripts/diagnostics/m1_save_debug.py` | 保底方案：把一帧 `/aruco/debug_image` 存成 PNG |
 | `config/flows.yaml` | 遥控速度上限、任务参数 |
 | `config/aruco.yaml` | 检测参数（字典、`marker_size`、EMA 平滑系数） |
 | `docs/flows.md` | 五套自动验收流程（F1~F5） |

@@ -7,7 +7,7 @@
       → mission_manager（模式调度，收到 WAYPOINT 时把设定点所有权交给 waypoint_nav）
 
 全程零人工输入：起飞 → 3 个航点 → 回到码上方悬停 → 由 mission_manager 收回控制权。
-自动验收：scripts/dev_run_f3.sh 用 verify_flow 发同样的模式请求。
+自动验收：scripts/run_f3.sh 用 verify_flow 发同样的模式请求。
 """
 
 import os

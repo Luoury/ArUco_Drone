@@ -17,7 +17,7 @@ bash scripts/run_flow.sh F2      # F1~F5 任意一个
 | 项 | 内容 |
 | --- | --- |
 | 入口 | `ros2 launch drone_bringup flow_f1.launch.py start_teleop:=true` |
-| 验收 | `bash scripts/dev_run_f1.sh` |
+| 验收 | `bash scripts/run_f1.sh` |
 | 操作 | `Space` 起飞 1.5 m → `w/a/s/d` 前后左右 → `r/f` 升降 → `q/e` 偏航 → `0` 降落 |
 | 判据 | 起飞高度 > 1.2 m；最终高度 < 0.2 m；全程无 crash |
 | 实测 | 起飞 1.95 m，飞行中最低 1.84 m，降落 7.7 s，最终 0.03 m → **PASS** |
@@ -27,7 +27,7 @@ bash scripts/run_flow.sh F2      # F1~F5 任意一个
 | 项 | 内容 |
 | --- | --- |
 | 入口 | `ros2 launch drone_bringup flow_f2.launch.py` |
-| 验收 | `bash scripts/dev_run_f2.sh` |
+| 验收 | `bash scripts/run_f2.sh` |
 | 操作 | `Space` 起飞 → 键盘飞到码附近 → 按 `2`（或发 `/mission/mode = ARUCO_LAND`） |
 | 判据 | marker_detected = yes；最终水平误差 ≤ 0.25 m；最终高度 ≤ 0.25 m；全程 ≤ 150 s |
 | 实测 | 0.81 m 接管 → IDLE→ALIGN→DESCEND→FINAL→DONE，落点水平 0.01 m / 高度 -0.01 m / 31.06 s → **PASS** |
@@ -37,7 +37,7 @@ bash scripts/run_flow.sh F2      # F1~F5 任意一个
 | 项 | 内容 |
 | --- | --- |
 | 入口 | `ros2 launch drone_bringup flow_f3.launch.py` |
-| 验收 | `bash scripts/dev_run_f3.sh` |
+| 验收 | `bash scripts/run_f3.sh` |
 | 航点 | `config/waypoints.yaml`：`(3,0,2) → (3,3,2) → (0,0,2)`（最后一点是码正上方，给 F4 接力） |
 | 判据 | 每点稳态误差 ≤ 0.35 m；全程 ≤ 180 s |
 | 实测 | 0.158 / 0.075 / 0.102 m，30.6 s，落点高度 -0.04 m → **PASS** |
@@ -47,7 +47,7 @@ bash scripts/run_flow.sh F2      # F1~F5 任意一个
 | 项 | 内容 |
 | --- | --- |
 | 入口 | `ros2 launch drone_bringup flow_f4.launch.py` |
-| 验收 | `bash scripts/dev_run_f4.sh`（`M5_PROBE=1` 同时录设定点） |
+| 验收 | `bash scripts/run_f4.sh`（`M5_PROBE=1` 同时录设定点） |
 | 操作 | 只有一条 `AUTO` 模式请求（等价于按 `4`），之后零人工输入 |
 | 判据 | 全程零人工输入；最终水平误差 ≤ 0.25 m；最终高度 ≤ 0.25 m；≤ 180 s |
 | 实测 | `IDLE → AUTO_WAYPOINT → AUTO_LAND → AUTO_DONE`，42.5 s，落点水平 0.04 m / 高度 -0.03 m → **PASS** |
@@ -57,7 +57,7 @@ bash scripts/run_flow.sh F2      # F1~F5 任意一个
 | 项 | 内容 |
 | --- | --- |
 | 入口 | `ros2 launch drone_bringup flow_f5.launch.py` |
-| 验收 | `bash scripts/dev_run_f5.sh` |
+| 验收 | `bash scripts/run_f5.sh` |
 | 故障注入 | 验收脚本在 Gazebo 侧用 `gz service /world/aruco/create` 在机体正下方生成一块 3 m × 3 m 黑色遮挡板，遮住相机 3.0 s 后撤除（真实遮挡，不是模拟丢帧） |
 | 判据 | marker_occluded = yes；遮挡后高度回升 ≥ 1.0 m；无 crash；最终水平误差 ≤ 0.25 m；最终高度 ≤ 0.25 m；≤ 240 s |
 | 实测 | 遮挡期间最长无检测 3.00 s，高度 1.85 m → 3.72 m（回升 1.87 m），之后重新对准降落，落点 0.01 m / 0.02 m，47.0 s → **PASS** |

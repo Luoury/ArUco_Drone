@@ -59,7 +59,7 @@ done
 sleep 4
 
 echo "[m1] 6/6 校验检测精度"
-STEP6="${M1_STEP6:-$ROOT/scripts/m1_check_detection.py}"
+STEP6="${M1_STEP6:-$ROOT/scripts/diagnostics/m1_check_detection.py}"
 python3 "$STEP6" 15
 rc=$?
 echo "[m1] 检测校验返回 $rc（0=PASS）"

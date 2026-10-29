@@ -14,7 +14,7 @@
   检测器本体（solvePnP + 姿态旋转 + 地图平移）的误差。
 
 用法（需要 sim + bringup + aruco_detector 都在跑）：
-  python3 scripts/m1_detector_accuracy.py [--model x500_mono_cam_down_0]
+  python3 scripts/diagnostics/m1_detector_accuracy.py [--model x500_mono_cam_down_0]
                                           [--duration 15] [--tag-z 0.001]
 """
 

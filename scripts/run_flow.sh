@@ -25,7 +25,7 @@ case "$FLOW" in
     ;;
 esac
 
-RUNNER="$ROOT/scripts/dev_run_$(echo "$FLOW" | tr 'A-Z' 'a-z').sh"
+RUNNER="$ROOT/scripts/run_$(echo "$FLOW" | tr 'A-Z' 'a-z').sh"
 if [ ! -f "$RUNNER" ]; then
   echo "找不到流程脚本: $RUNNER" >&2
   exit 2

@@ -5,7 +5,7 @@
 imgmsg_to_cv2 会 AttributeError 然后 segfault），所以直接
 np.frombuffer(msg.data) 重排。
 
-用法：python3 scripts/m1_save_debug.py <输出路径>
+用法：python3 scripts/diagnostics/m1_save_debug.py <输出路径>
 """
 
 import sys

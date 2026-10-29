@@ -236,11 +236,11 @@ real_time_factor: 0.92995854477297035
 
 ### 3.5 踩坑与修复
 
-**坑 J：旧暂存覆盖了新源码**
-`sync.sh` 原来无条件 `cp -rf`，M1 阶段某次用 14:22 的旧暂存把 M0 末期写的 `takeoffTo` 源码覆盖成没有它的版本（只剩 `install/` 里还能看到符号）。→ 改为只覆盖"更新"的文件（`cp -u`），并加 `SYNC_FORCE=1` 显式强制。
+**坑 J：旧副本覆盖了新源码**
+早期用无条件 `cp -rf` 从 Windows 目录往 WSL 搬代码，某次把 M0 末期刚写的 `takeoffTo` 覆盖成了没有它的旧版本（只剩 `install/` 里还能看到符号）。→ 改为只覆盖更新的文件（`cp -u`），需要回退时显式强制。
 
-**坑 K：脚本同步自己导致解析失败**
-`sync.sh` 自己也在被同步目录里，就地 `cp` 覆盖等于"边执行边截断"，bash 直接报 `unexpected EOF while looking for matching '"'`，一个文件都没同步成。→ 改"先写临时名再 `mv`"（换目录项，正在执行的 bash 仍持旧 inode）。
+**坑 K：同步脚本把自己写坏**
+脚本本身也在被同步的目录里，就地 `cp` 覆盖等于"边执行边截断"，bash 直接报语法错误，一个文件都没复制成。→ 改成"先写临时名再 `mv`"。
 
 **坑 L：`ament_target_dependencies(drone_control)` 找不到目标**
 `drone_control` 把库和 `hover_test` 装在同一个 export set 里，展开成 `drone_control::hover_test`，CMake 报 `links to target drone_control::hover_test but the target was not found`。→ 显式 `target_link_libraries(... drone_control::drone_control_lib)`。
@@ -260,7 +260,7 @@ real_time_factor: 0.92995854477297035
 - `drone_aruco/landing_controller`：§5.3 状态机 `IDLE → SEARCH → ALIGN → DESCEND → FINAL → TOUCHDOWN`，以 50 Hz 发 `/mavros/setpoint_raw/local`；服务 `/aruco/landing/start|stop`，10 Hz 发布 `/aruco/landing/state`。
 - `aruco_detector` 增加 EMA 位置平滑（`smooth_alpha: 0.3`），抑制逐帧 PnP 噪声。
 - `mission_manager` 增加 `ARUCO_LAND` 委托：§5.5 的"先置 HOVER、等 0.5 s、再交给新控制器"，交接期间**本节点一个字都不发**，避免双发布者抢话题。
-- `flow_f2.launch.py`（`sim_bringup` + `aruco_detect` + `landing_controller` + `mission_manager`）、`drone_tools/verify_flow --flow F2`、`scripts/dev_run_f2.sh`。
+- `flow_f2.launch.py`（`sim_bringup` + `aruco_detect` + `landing_controller` + `mission_manager`）、`drone_tools/verify_flow --flow F2`、`scripts/run_f2.sh`。
 - MANUAL 模式从"速度设定点"改成"速度积分成位置目标"：位置环自带定高，顺手修掉了 M2 遗留的掉高问题。
 
 ### 4.2 F2 验收结果（真实输出）
@@ -300,7 +300,7 @@ real_time_factor: 0.92995854477297035
 ### 4.4 三个决定性的坑
 
 **坑 O：ENU 双重转换回归（最惊险）**
-`publishPositionSetpoint` 里又出现了 `msg.position.z = -enu.z`。mavros 收到的就是 ENU，再转一次等于命令"降到地下 1.4 m"，机体 0.3 s 内从 1.4 m 砸到 0.1 m。用 `scripts/trace_alt.py` 同时录 mavros 估计高度与 gz 真值，才确认是"真掉"而不是"读数跳变"。→ 四个 publish 函数一律直接发 ENU。
+`publishPositionSetpoint` 里又出现了 `msg.position.z = -enu.z`。mavros 收到的就是 ENU，再转一次等于命令"降到地下 1.4 m"，机体 0.3 s 内从 1.4 m 砸到 0.1 m。用 `scripts/diagnostics/trace_alt.py` 同时录 mavros 估计高度与 gz 真值，才确认是"真掉"而不是"读数跳变"。→ 四个 publish 函数一律直接发 ENU。
 
 **坑 P：相机光学系→机体系的 x 轴符号错**
 `kOptToFlu` 第一行写成 `{0, 1, 0}`，导致检测出的码位置在无人机**另一侧**（实测真实偏移 `(-1.09, -0.91)` vs 估计 `(+1.08, -0.87)`），降落控制器于是越飞越远。M1 是悬停在码正上方标定的，x/y 偏移都接近 0，**符号错了也完全看不出来**。→ 改成 `{0,-1,0, -1,0,0, 0,0,-1}`（行列式 +1），并新增 `dev_run_det_probe.sh` 专门做"飞离码上空"的偏移校验，修正后估计偏移 `(-1.02, -0.90)` vs 真实 `(-1.01, -0.92)`，误差约 2 cm。
@@ -324,7 +324,7 @@ real_time_factor: 0.92995854477297035
 | `drone_bringup/launch/flow_f3.launch.py` | `sim_bringup` + `waypoint_nav` + `mission_manager(flow=F3)` |
 | `drone_mission`（改） | 新增 `WAYPOINT` 模式委托：§5.5 先悬停 0.5 s 再 `/waypoint/start`，期间本节点**不发任何 setpoint** |
 | `drone_tools/drone_tools/verify_flow.py`（改） | 新增 `run_f3()`：一条模式指令跑完全程，逐点校验稳态误差 |
-| `scripts/dev_run_f3.sh` | 一键：起 SITL（含 IMU 健康检查）→ 起 F3 launch → 跑验收 → 收尾 |
+| `scripts/run_f3.sh` | 一键：起 SITL（含 IMU 健康检查）→ 起 F3 launch → 跑验收 → 收尾 |
 
 航点状态机：`IDLE → TAKEOFF → GOTO ⇄ HOLD → DONE`。每个航点必须"误差 ≤ `settle_tol`(0.30 m) 且**连续稳定 2 s**"才算到位，稳态误差取稳定计时结束那一拍的实测值。
 
@@ -388,8 +388,8 @@ real_time_factor: 0.92995854477297035
 | `drone_bringup/launch/flow_f4.launch.py` | 一条命令拉起 sim_bringup + aruco_detect + waypoint_nav + landing_controller + mission_manager(F4) |
 | `drone_tools/drone_tools/verify_flow.py` | `run_f4()`：只发一条 `AUTO` 模式请求，其余全靠系统自己跑；记录 `/mission/status.state` 变化序列 |
 | `drone_bringup/config/flows.yaml` | `auto_timeout: 120.0`、`f4_lateral_max: 0.25`、`f4_altitude_max: 0.25`、`f4_flow_timeout: 180.0` |
-| `scripts/dev_run_f4.sh` | 起 SITL → launch F4 → 等四个节点就绪 → 跑验收 → 收尾 |
-| `scripts/m5_probe.py` | 临时探针：1 Hz 记录 `/mavros/setpoint_raw/local` 的 `type_mask / position.z / velocity.z` + 实际高度 |
+| `scripts/run_f4.sh` | 起 SITL → launch F4 → 等四个节点就绪 → 跑验收 → 收尾 |
+| `scripts/diagnostics/m5_probe.py` | 临时探针：1 Hz 记录 `/mavros/setpoint_raw/local` 的 `type_mask / position.z / velocity.z` + 实际高度 |
 
 AUTO 的调度顺序（严格按 `mission_manager` 的 `monitorAuto()`）：
 
@@ -470,8 +470,8 @@ F4 前三次都以同样的方式失败：链路、检测、状态机全对，�
 
 教训：**OFFBOARD 阶段"谁在发设定点"必须是全局唯一且可验证的**。任何"我跑完了但继续维持位置"的便利写法，都会在下一次控制权交接时变成隐形冲突。诊断手段首选"直接听话题"（本项目的 `m5_probe.py`），而不是继续加日志猜。
 
-**坑 U：`sync.sh` 用 mtime 判断文件新旧，把改过的脚本静默跳过**
-`/mnt/c` 是 DrvFs，mtime 有秒级/时区误差；`cp -u` 的 `-nt` 判断因此把刚改过的 `dev_run_f4.sh` 判成"更旧"而跳过同步，结果 F4 白跑了一轮（探针根本没启动、`/tmp/f4_probe.log` 不存在，日志里也看不出异常）。→ 改成 `cmp -s` **比内容**，`src/` 用 `rsync -a --checksum`；只有 `SYNC_FORCE=1` 才无条件覆盖。"同步成功"这句话在跨文件系统时必须由内容比较来背书。
+**坑 U：用 mtime 判断文件新旧，改过的脚本被静默跳过**
+`/mnt/c` 是 DrvFs，mtime 有秒级/时区误差，`cp -u` 的 `-nt` 判断把刚改过的脚本当成"更旧"而跳过，结果 F4 白跑了一轮（探针根本没启动、`/tmp/f4_probe.log` 不存在，日志里也看不出异常）。→ 改成用 `cmp -s` **比内容**，源码目录用 `rsync -a --checksum`。跨文件系统的"已同步"必须由内容比较背书。
 
 ---
 
@@ -485,7 +485,7 @@ F4 前三次都以同样的方式失败：链路、检测、状态机全对，�
 | `drone_bringup/launch/flow_f5.launch.py` | F5 入口（sim_bringup + 检测 + 航点 + 降落 + mission_manager(F5)） |
 | `drone_tools/drone_tools/verify_flow.py` | `run_f4(occlude=True)`：AUTO 全链路 + 在 Gazebo 侧真实遮挡 3 s；新增遮挡分析、回升量、单次恢复判据 |
 | `drone_bringup/config/flows.yaml` | `f5_trigger_alt 2.4`、`f5_occlusion 3.0`、`f5_rise_min 1.0`、`f5_rise_window 12.0`、`f5_flow_timeout 240.0` 等 |
-| `scripts/dev_run_f5.sh` / `scripts/run_flow.sh` | F5 一键跑 / 五套流程统一入口（`run_flow.sh F1..F5`） |
+| `scripts/run_f5.sh` / `scripts/run_flow.sh` | F5 一键跑 / 五套流程统一入口（`run_flow.sh F1..F5`） |
 | `docs/flows.md` | 五套流程的入口、判据、实测结果与"判据怎么算" |
 
 ### 7.2 F5 验收结果（真实输出）
@@ -619,7 +619,7 @@ ROS_DISTRO=humble  rclcpp=/opt/ros/humble
 
 ## 12. 附加交付：演示视频录制管线
 
-M6 之后按需求追加：用户要"录一段视频"用于展示。直接录 WSLg 窗口不可靠（远程桌面合成通道
+M6 之后补充：为了展示效果需要录一段视频。直接录 WSLg 窗口不可靠（远程桌面合成通道
 会让 3D 视口 stalled，录出来是冻住的画面），因此改为**离屏录制**：把相机放进仿真里，
 画面走 ROS 话题，再由 Python 编码成 mp4。整条链路不依赖任何窗口。
 
@@ -659,7 +659,7 @@ M6 之后按需求追加：用户要"录一段视频"用于展示。直接录 WS
 
 ### 12.4 附带结论：MobaXterm 的 X server 可用
 
-用户提出"能不能用 X server 替代 WSLg"。实测：`XWin_MobaX.exe` 在 127.0.0.1:6000 监听，
+为进一步减少窗口卡顿，试过用 X server 替代 WSLg。实测：`XWin_MobaX.exe` 在 127.0.0.1:6000 监听，
 `xdpyinfo` 显示 X.Org 1.20.13 + GLX 存在，`DISPLAY=127.0.0.1:0 gz sim -g --render-engine ogre`
 能正常渲染出无人机与码板（无 OpenGL context 报错）。X11 的屏幕尺寸是 1024×768，比 WSLg 小。
 用法见 `manual_test.md` §6。

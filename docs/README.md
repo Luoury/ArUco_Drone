@@ -41,9 +41,9 @@ ros2 run drone_control hover_test
 ```
 
 一键联调（含健康检查与验收）：
-`bash scripts/dev_run_hover.sh`（M0）、`bash scripts/dev_run_aruco.sh`（M1）、
-`bash scripts/dev_run_f1.sh`（M2 的 F1 流程）、`bash scripts/dev_run_f2.sh`（M3 的 F2 流程）、
-`bash scripts/dev_run_f3.sh`（M4 的 F3 流程），
+`bash scripts/diagnostics/dev_run_hover.sh`（M0）、`bash scripts/diagnostics/dev_run_aruco.sh`（M1）、
+`bash scripts/run_f1.sh`（M2 的 F1 流程）、`bash scripts/run_f2.sh`（M3 的 F2 流程）、
+`bash scripts/run_f3.sh`（M4 的 F3 流程），
 每个都自动跑完并打印 `[FLOW Fx] RESULT:`。
 
 人工试飞 F2（键盘按下 `2` 交给视觉降落；`w/a/s/d/r/f/q/e` 手动飞）：
@@ -148,22 +148,21 @@ bash scripts/record_video.sh F2 70 auto     # 流程 时长 模式(auto/manual)
 | `scripts/fix_gz_plugins.sh apply\|restore\|show` | 替换 PX4 的 gz 插件清单（去 GstCameraSystem 泄漏 + 锁 Ogre1） |
 | `scripts/fix_gz_model.sh apply\|restore\|show` | 展平 x500 模型（绕开 merge 丢传感器） |
 | `scripts/set_px4_param.py <名> <值>` | rclpy 版 PX4 参数设置（绕开 ros2 CLI daemon） |
-| `scripts/offboard_probe.py pos\|vel <v>` | 直接发 setpoint_raw/local 的最小探针 |
-| `scripts/probe_motors.sh` | 采样 gz 电机指令，判断 PX4 是否真在出力 |
-| `scripts/dev_run_hover.sh` | M0 一键联调 + 验收 |
-| `scripts/dev_run_aruco.sh` | M1 一键联调 + 验收（`ARUCO_POSE_TOPIC` 可切位姿源） |
-| `scripts/dev_run_f1.sh` | M2：起 SITL + `flow_f1.launch.py` + `verify_flow --flow F1`，跑完自动收尾 |
-| `scripts/dev_run_f2.sh` | M3：起 SITL + `flow_f2.launch.py` + `verify_flow --flow F2` |
-| `scripts/dev_run_f3.sh` | M4：起 SITL + `flow_f3.launch.py` + `verify_flow --flow F3` |
-| `scripts/dev_run_f4.sh` | M5：F4 全自主链路验收（`M5_PROBE=1` 同时录设定点） |
-| `scripts/dev_run_f5.sh` | M6：F5 异常处理验收（Gazebo 侧真实遮挡 3 s） |
+| `scripts/diagnostics/offboard_probe.py pos\|vel <v>` | 直接发 setpoint_raw/local 的最小探针 |
+| `scripts/diagnostics/probe_motors.sh` | 采样 gz 电机指令，判断 PX4 是否真在出力 |
+| `scripts/diagnostics/dev_run_hover.sh` | M0 一键联调 + 验收 |
+| `scripts/diagnostics/dev_run_aruco.sh` | M1 一键联调 + 验收（`ARUCO_POSE_TOPIC` 可切位姿源） |
+| `scripts/run_f1.sh` | M2：起 SITL + `flow_f1.launch.py` + `verify_flow --flow F1`，跑完自动收尾 |
+| `scripts/run_f2.sh` | M3：起 SITL + `flow_f2.launch.py` + `verify_flow --flow F2` |
+| `scripts/run_f3.sh` | M4：起 SITL + `flow_f3.launch.py` + `verify_flow --flow F3` |
+| `scripts/run_f4.sh` | M5：F4 全自主链路验收（`M5_PROBE=1` 同时录设定点） |
+| `scripts/run_f5.sh` | M6：F5 异常处理验收（Gazebo 侧真实遮挡 3 s） |
 | `scripts/run_flow.sh F1..F5` | 五套流程统一入口 |
-| `scripts/trace_alt.py [秒]` | 10 Hz 录高度+模式到 CSV，判断"真掉高"还是"读数跳变" |
-| `scripts/dev_manual_probe.sh` | 起 F2 链路 → 发 `/mission/mode=MANUAL` → 录高度 |
-| `scripts/dev_run_det_probe.sh` / `dev_det_probe.py` | 飞离码上空后逐帧比对"真实偏移 vs 估计偏移"（验相机轴系） |
-| `scripts/m1_detect_offline.py` | 离线识别 `arucotag.png` |
-| `scripts/m1_check_detection.py` | 在线精度校验（稳态悬停后再采样） |
-| `scripts/m1_detector_accuracy.py` | 把 EKF 误差与检测器误差分开度量 |
-| `scripts/m1_save_debug.py <png>` | 存一张 `/aruco/debug_image` 供人工核对 |
-| `scripts/m1_frame_check.py` | 比对 `gz model -p` 与 mavros 位姿，量化坐标系偏置 |
-| `scripts/sync.sh` | 开发机专用：把 Windows 暂存目录同步进工作区 |
+| `scripts/diagnostics/trace_alt.py [秒]` | 10 Hz 录高度+模式到 CSV，判断"真掉高"还是"读数跳变" |
+| `scripts/diagnostics/dev_manual_probe.sh` | 起 F2 链路 → 发 `/mission/mode=MANUAL` → 录高度 |
+| `scripts/diagnostics/dev_run_det_probe.sh` / `dev_det_probe.py` | 飞离码上空后逐帧比对"真实偏移 vs 估计偏移"（验相机轴系） |
+| `scripts/diagnostics/m1_detect_offline.py` | 离线识别 `arucotag.png` |
+| `scripts/diagnostics/m1_check_detection.py` | 在线精度校验（稳态悬停后再采样） |
+| `scripts/diagnostics/m1_detector_accuracy.py` | 把 EKF 误差与检测器误差分开度量 |
+| `scripts/diagnostics/m1_save_debug.py <png>` | 存一张 `/aruco/debug_image` 供人工核对 |
+| `scripts/diagnostics/m1_frame_check.py` | 比对 `gz model -p` 与 mavros 位姿，量化坐标系偏置 |

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # F1 流程一键跑：起 SITL（带健康检查）→ 起 flow_f1.launch.py → 跑 verify_flow。
-# 用法：bash dev_run_f1.sh
+# 用法：bash run_f1.sh
 #
 # 注意：本脚本里不要用 set -u（source /opt/ros/humble/setup.bash 在 set -u 下会
 # 报 AMENT_TRACE_SETUP_FILES: unbound variable 直接退出）。
