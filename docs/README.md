@@ -4,7 +4,8 @@ PX4 v1.17 SITL + Gazebo Harmonic（gz sim 8.10）+ ROS 2 Humble + MAVROS。
 需求书见仓库根目录 `无人机ARUCO自主降落仿真_需求书.md`。
 
 > **只想自己跑一下、看看画面？**
-> 看 [`manual_test.md`](manual_test.md)（手动测试与看画面指南），
+> 看 [`manual_test.md`](manual_test.md)（手动测试与看画面指南）、
+> [`video_demo.md`](video_demo.md)（一条命令录演示视频），
 > 或者三步走：`bash scripts/manual_demo.sh start` → `... view` → `... teleop`。
 
 ## 目录结构
@@ -20,7 +21,7 @@ ArUco_Drone/
 │   ├── drone_teleop/       # 键盘遥控 teleop_node
 │   └── drone_tools/        # verify_flow 流程自动验收
 ├── scripts/                # 启动、诊断、验收脚本
-├── docs/                   # 本文档、manual_test.md、flows.md、troubleshooting.md、stage_reports.md
+├── docs/                   # 本文档、manual_test.md、video_demo.md、flows.md、troubleshooting.md、stage_reports.md
 └── logs/                   # 运行日志（git 忽略）
 ```
 
@@ -76,6 +77,17 @@ bash scripts/manual_demo.sh stop     # 全部停掉
 
 细节（键位、预期现象、常见问题）见 [`manual_test.md`](manual_test.md)。
 
+## 录制演示视频
+
+不想录屏（WSLg 窗口会卡），用离屏管线：相机在仿真里，帧从话题拿，Python 编码成 mp4。
+
+```bash
+bash scripts/record_video.sh F2 70 auto     # 流程 时长 模式(auto/manual)
+# 产物：logs/videos/F2_<时分秒>.mp4（960x540@25，带 HUD 与机载检测小窗）
+```
+
+细节（机位怎么调、参数表、排错）见 [`video_demo.md`](video_demo.md)。
+
 ## 关键约定
 
 | 项 | 值 |
@@ -124,6 +136,8 @@ bash scripts/manual_demo.sh stop     # 全部停掉
   `final_lateral = 0.01 m`、`elapsed = 47.0 s` → `[FLOW F5] RESULT: PASS`。
 
 ## 脚本清单
+
+> 录制相关：`record_video.sh`、`spawn_overhead_cam.sh`。
 
 | 脚本 | 用途 |
 | --- | --- |

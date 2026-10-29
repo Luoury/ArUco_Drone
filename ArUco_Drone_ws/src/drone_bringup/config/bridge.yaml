@@ -16,3 +16,8 @@ gz_sensor_bridge:
     qos_depth: 5
     # 每隔多少秒打印一次相机实际帧率（0 表示不打印）
     rate_log_period: 5.0
+
+    # 俯视机位（录视频用）：enable_overhead 由 launch 的 start_overhead 决定
+    ros_overhead_image_topic: /camera/overhead/image_raw
+    ros_overhead_info_topic: /camera/overhead/camera_info
+    overhead_frame_id: overhead_cam

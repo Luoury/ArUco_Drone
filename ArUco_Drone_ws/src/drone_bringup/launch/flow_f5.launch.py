@@ -34,10 +34,14 @@ def generate_launch_description():
     start_teleop = LaunchConfiguration('start_teleop')
     start_detector = LaunchConfiguration('start_detector')
     world = LaunchConfiguration('world')
+    start_overhead = LaunchConfiguration('start_overhead')
 
     declare_args = [
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('world', default_value='aruco'),
+        DeclareLaunchArgument(
+            'start_overhead', default_value='false',
+            description='是否桥接俯视机位（录视频用；需先 spawn overhead_cam）'),
         DeclareLaunchArgument(
             'start_teleop', default_value='false',
             description='是否同时启动键盘遥控（需要真实 TTY；验收时保持 false 才是"零人工输入"）'),
@@ -52,6 +56,7 @@ def generate_launch_description():
         launch_arguments={
             'use_sim_time': use_sim_time,
             'world': world,
+            'start_overhead': start_overhead,
         }.items())
 
     detector = IncludeLaunchDescription(

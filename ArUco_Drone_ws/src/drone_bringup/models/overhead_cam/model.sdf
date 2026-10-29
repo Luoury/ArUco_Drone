@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<!--
+  俯视机位（录视频专用）
+  - 静态模型，位置 (0, 0, 6.0)，pitch = +90°，即相机光轴朝 -z 看地面
+    （gz 相机沿自身 +x 看，"绕 y 转 +90°" 正好把 +x 转到 -z）
+  - 视野 1.25 rad：6.0 m 高度可覆盖约 ±3.5 m 地面：码在画面中央足够大，航点 (3,0)/(3,3) 在边缘或短暂出画
+  - 960x540@10：比机载相机轻得多（像素 1/2.8、帧率 1/3）。实测 1280x720@30 会把
+    主相机的出图率从 30 Hz 拖到 ~5 Hz，导致视觉降落丢码，所以这里必须降配
+-->
+<sdf version="1.9">
+  <model name="overhead_cam">
+    <static>true</static>
+    <pose>0 0 6.0 0 1.5708 0</pose>
+    <link name="link">
+      <sensor name="camera" type="camera">
+        <pose>0 0 0 0 0 0</pose>
+        <always_on>1</always_on>
+        <visualize>false</visualize>
+        <update_rate>10</update_rate>
+        <camera>
+          <horizontal_fov>1.05</horizontal_fov>
+          <image>
+            <width>960</width>
+            <height>540</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <near>0.1</near>
+            <far>100</far>
+          </clip>
+          <noise>
+            <type>none</type>
+          </noise>
+        </camera>
+        <gz_frame_id>overhead_cam</gz_frame_id>
+      </sensor>
+    </link>
+  </model>
+</sdf>

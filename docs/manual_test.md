@@ -1,7 +1,8 @@
 # 手动测试与看画面指南
 
 > 面向"我想自己跑一下、看看画面"的场景。所有命令都在 **WSL 终端**里执行，
-> 图形窗口会直接弹在 Windows 桌面上（WSLg），不需要装 X Server 或 VcXsrv。
+> 图形窗口默认直接弹在 Windows 桌面上（WSLg）；如果 3D 窗口卡，可以改用 MobaXterm 的 X server（见 §6）。
+> 想要一段能直接发出去的视频，用 `docs/video_demo.md` 那条管线。
 > 本文的每条命令与每张图都是在本机实机跑出来的。
 
 ---
@@ -13,6 +14,7 @@
 | **图像窗口（推荐）** | `bash scripts/manual_demo.sh view` | 相机原始画面 + 检测叠加（绿色角点框、RGB 坐标轴、`id=0 z_cam=1.90m frame=3800`） | 稳定，实测多次 |
 | **Gazebo 3D** | `bash scripts/manual_demo.sh gui` | 3D 世界：无人机、地面黑色码板、影子、Entity Tree | 可用；WSLg 是远程渲染，偶尔窗口需要拖一下/缩放一下才重绘 |
 | **抓帧存 PNG（保底）** | `python3 scripts/m1_save_debug.py /tmp/shot.png` | 单帧 `/aruco/debug_image` 存成文件 | 100% 可靠，无窗口依赖 |
+| **X server（可选）** | 见 §6 | 与 Gazebo 3D 相同，但走 MobaXterm 自带的 X.Org，不经过 WSLg 的远程桌面通道 | 实测可正常渲染（见 §6） |
 
 两种窗口都可以随时关掉，**不影响仿真**（GUI 是独立进程，连的是正在跑的 gz server）。
 
@@ -184,7 +186,50 @@ bash scripts/manual_demo.sh stop
 
 ---
 
-## 6. 常见问题
+## 6. 用 MobaXterm 的 X server 跑 3D 窗口（可选）
+
+WSLg 的 3D 窗口有概率卡住（鼠标点菜单还有反应，但视口不动）。如果本机装了 MobaXterm，
+可以让 Gazebo 走它自带的 X server，绕开 WSLg 的远程桌面合成通道。
+
+**先确认 X server 在起作用**（在 WSL 里）：
+
+```bash
+pgrep -a XWin_MobaX                     # 看到 XWin_MobaX.exe 就说明它在跑
+DISPLAY=127.0.0.1:0 xdpyinfo | head -6  # 应输出 name of display / version / GLX 存在
+```
+
+实测输出（本机）：
+
+```
+name of display:    127.0.0.1:0
+version number:     11.0
+vendor string:      The X.Org Foundation
+vendor release number: 12013005
+dimensions:         1024x768
+```
+
+然后**只把 GUI 指过去**（仿真本体不用动，它本来就是 headless 跑的）：
+
+```bash
+export DISPLAY=127.0.0.1:0
+source ~/PX4-Autopilot/build/px4_sitl_default/rootfs/gz_env.sh
+gz sim -g --render-engine ogre
+```
+
+要点与实测结论：
+
+- MobaXterm 自带的是 **X.Org 1.20.13（XWin 系）且支持 GLX**，所以 `gz sim -g` 不会报
+  `Unable to create OpenGL context`，3D 视口能正常渲染出无人机与码板；
+- 它的显示尺寸是 **1024×768**（比 WSLg 的窗口小），想大一点在 MobaXterm 的 X11 设置里调；
+- 只是"看画面"的话，`DISPLAY` 只影响那一条命令，不影响你已经起好的仿真；
+- 想恢复 WSLg：`unset DISPLAY` 即可（WSLg 默认就是 `:0`，别长期 export 在 shell 里）。
+
+> 注意：`rqt_image_view` 建议继续用 WSLg（它重绘不频繁，本来就不卡）；
+> X11 下的 Qt 窗口在某些主题下字体可能发虚。
+
+---
+
+## 7. 常见问题
 
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
@@ -199,7 +244,7 @@ bash scripts/manual_demo.sh stop
 
 ---
 
-## 7. 这套东西背后的两个环境事实（避免误判）
+## 8. 这套东西背后的两个环境事实（避免误判）
 
 1. **WSL2 里没有 `/dev/dri`**，Gazebo 只能用 Ogre1 软件渲染，所以 `sim.sh` 强制
    `PX4_GZ_SIM_RENDER_ENGINE=ogre` + `HEADLESS=1`（不启 PX4 自带的 GUI）。
@@ -210,7 +255,7 @@ bash scripts/manual_demo.sh stop
 
 ---
 
-## 8. 相关文件
+## 9. 相关文件
 
 | 文件 | 用途 |
 | --- | --- |

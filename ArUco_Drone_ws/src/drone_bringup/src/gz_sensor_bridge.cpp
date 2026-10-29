@@ -108,6 +108,18 @@ public:
     const auto qos_depth = declare_parameter<int>("qos_depth", 5);
     const auto rate_log_period = declare_parameter<double>("rate_log_period", 5.0);
 
+    // 第二路相机：俯视机位，专供录视频（与主相机同构，只是话题/frame_id 不同）。
+    enable_overhead_ = declare_parameter<bool>("enable_overhead", false);
+    const auto gz_overhead_image_topic = declare_parameter<std::string>(
+      "gz_overhead_image_topic", "");
+    const auto gz_overhead_info_topic = declare_parameter<std::string>(
+      "gz_overhead_info_topic", "");
+    const auto ros_overhead_image_topic = declare_parameter<std::string>(
+      "ros_overhead_image_topic", "/camera/overhead/image_raw");
+    const auto ros_overhead_info_topic = declare_parameter<std::string>(
+      "ros_overhead_info_topic", "/camera/overhead/camera_info");
+    overhead_frame_id_ = declare_parameter<std::string>("overhead_frame_id", "overhead_cam");
+
     rclcpp::QoS qos(static_cast<size_t>(qos_depth));
     if (qos_reliability == "reliable") {
       qos.reliable();
@@ -160,7 +172,43 @@ public:
                 get_logger(), "相机帧率 %.1f Hz（%zu 帧 / 最近 %.1f s）",
                 static_cast<double>(image_count_) / period, image_count_, period);
               image_count_ = 0;
+              if (overhead_image_pub_) {
+                RCLCPP_INFO(
+                  get_logger(), "俯视相机帧率 %.1f Hz（%zu 帧 / 最近 %.1f s）",
+                  static_cast<double>(overhead_image_count_) / period, overhead_image_count_,
+                  period);
+                overhead_image_count_ = 0;
+              }
             });
+        }
+      }
+    }
+
+    if (enable_overhead_) {
+      if (gz_overhead_image_topic.empty() || gz_overhead_info_topic.empty()) {
+        RCLCPP_ERROR(
+          get_logger(), "enable_overhead 为真但 gz_overhead_image_topic/"
+          "gz_overhead_info_topic 为空");
+        enable_overhead_ = false;
+      } else {
+        overhead_image_pub_ = create_publisher<sensor_msgs::msg::Image>(
+          ros_overhead_image_topic, qos);
+        overhead_info_pub_ = create_publisher<sensor_msgs::msg::CameraInfo>(
+          ros_overhead_info_topic, qos);
+        if (!gz_node_.Subscribe(
+              gz_overhead_image_topic, &GzSensorBridge::onOverheadImage, this))
+        {
+          RCLCPP_ERROR(
+            get_logger(), "订阅 gz 俯视图像失败: %s", gz_overhead_image_topic.c_str());
+        } else if (!gz_node_.Subscribe(
+                     gz_overhead_info_topic, &GzSensorBridge::onOverheadInfo, this))
+        {
+          RCLCPP_ERROR(
+            get_logger(), "订阅 gz 俯视相机内参失败: %s", gz_overhead_info_topic.c_str());
+        } else {
+          RCLCPP_INFO(
+            get_logger(), "桥接 gz %s -> ROS %s（俯视机位，供录视频）",
+            gz_overhead_image_topic.c_str(), ros_overhead_image_topic.c_str());
         }
       }
     }
@@ -176,7 +224,7 @@ public:
       }
     }
 
-    if (!enable_clock_ && !enable_camera_ && !enable_odom_) {
+    if (!enable_clock_ && !enable_camera_ && !enable_odom_ && !enable_overhead_) {
       RCLCPP_WARN(get_logger(), "时钟、相机、里程计都被关闭，本节点不做任何事");
     }
   }
@@ -194,9 +242,12 @@ private:
     clock_pub_->publish(out);
   }
 
-  void onImage(const gz::msgs::Image & msg)
+  // 两路相机共用：把 gz 图像转成 ROS 图像后发布
+  void publishImageImpl(
+    const gz::msgs::Image & msg, rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr & pub,
+    size_t & counter, const std::string & default_frame)
   {
-    if (!image_pub_) {
+    if (!pub) {
       return;
     }
     const std::string encoding = gzEncoding(msg.pixel_format_type());
@@ -209,27 +260,41 @@ private:
     sensor_msgs::msg::Image out;
     out.header.stamp.sec = msg.header().stamp().sec();
     out.header.stamp.nanosec = msg.header().stamp().nsec();
-    out.header.frame_id = gzFrameId(msg.header(), frame_id_);
+    out.header.frame_id = gzFrameId(msg.header(), default_frame);
     out.width = msg.width();
     out.height = msg.height();
     out.step = msg.step() != 0 ? msg.step() : msg.width() * (msg.data().size() / msg.height());
     out.encoding = encoding;
     out.is_bigendian = 0;
     out.data.assign(msg.data().begin(), msg.data().end());
-    ++image_count_;
-    image_pub_->publish(out);
+    ++counter;
+    pub->publish(out);
   }
 
-  void onCameraInfo(const gz::msgs::CameraInfo & msg)
+  void onImage(const gz::msgs::Image & msg)
   {
-    if (!info_pub_) {
+    publishImageImpl(msg, image_pub_, image_count_, frame_id_);
+  }
+
+  void onOverheadImage(const gz::msgs::Image & msg)
+  {
+    publishImageImpl(msg, overhead_image_pub_, overhead_image_count_, overhead_frame_id_);
+  }
+
+  // 两路相机共用：gz CameraInfo -> ROS CameraInfo
+  void publishInfoImpl(
+    const gz::msgs::CameraInfo & msg,
+    rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr & pub,
+    const std::string & default_frame)
+  {
+    if (!pub) {
       return;
     }
 
     sensor_msgs::msg::CameraInfo out;
     out.header.stamp.sec = msg.header().stamp().sec();
     out.header.stamp.nanosec = msg.header().stamp().nsec();
-    out.header.frame_id = gzFrameId(msg.header(), frame_id_);
+    out.header.frame_id = gzFrameId(msg.header(), default_frame);
     out.width = msg.width();
     out.height = msg.height();
     out.distortion_model = "plumb_bob";
@@ -258,7 +323,17 @@ private:
     out.r[0] = 1.0;
     out.r[4] = 1.0;
     out.r[8] = 1.0;
-    info_pub_->publish(out);
+    pub->publish(out);
+  }
+
+  void onCameraInfo(const gz::msgs::CameraInfo & msg)
+  {
+    publishInfoImpl(msg, info_pub_, frame_id_);
+  }
+
+  void onOverheadInfo(const gz::msgs::CameraInfo & msg)
+  {
+    publishInfoImpl(msg, overhead_info_pub_, overhead_frame_id_);
   }
 
   void onOdometry(const gz::msgs::Odometry & msg)
@@ -285,6 +360,9 @@ private:
   bool enable_odom_{false};
   std::string frame_id_{"camera_link"};
 
+  bool enable_overhead_{false};
+  std::string overhead_frame_id_{"overhead_cam"};
+
   gz::transport::Node gz_node_;
   rclcpp::Publisher<rosgraph_msgs::msg::Clock>::SharedPtr clock_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;
@@ -292,6 +370,9 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr odom_pub_;
   rclcpp::TimerBase::SharedPtr rate_timer_;
   size_t image_count_{0};
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr overhead_image_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr overhead_info_pub_;
+  size_t overhead_image_count_{0};
 };
 
 }  // namespace drone_bringup

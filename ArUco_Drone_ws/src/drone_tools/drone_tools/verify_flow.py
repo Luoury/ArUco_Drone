@@ -323,11 +323,24 @@ def run_f2(node):
         node.say('FAIL 原因：起飞高度未达标')
         return False
 
-    # ② "键盘飞到码附近"：这里用与键盘完全相同的 /teleop/cmd 通路，前飞一段制造对准误差
-    node.say(f'遥控：前飞 {node.f2_offset_time:.1f} s（离开码上方，模拟人工操作）')
-    node.spin_for(node.f2_offset_time,
-                  Twist(linear=_vec(node.cruise_vel, 0.0, 0.0)))
-    node.spin_for(1.0)
+    # ② 先等自动起飞彻底结束：mission_manager 在 MANUAL 里用阻塞式 takeoff，
+    #    这段时间它根本不处理 /teleop/cmd。以前一到 1.2 m 就前飞，指令被吞掉，
+    #    "离开码上方"只走了 0.1 m（判据照样能过，但没起到制造误差的作用）。
+    node.wait_until(
+        lambda: node.status is not None and abs(node.status.vertical_speed) < 0.15,
+        20.0, label='起飞完成（垂直速度归零）')
+    node.spin_for(0.5)
+
+    # ③ "键盘飞到码附近"：用与键盘完全相同的 /teleop/cmd 通路，前飞制造对准误差。
+    #    按 1 s 一段推进，直到真的离开码 0.6 m（最多 6 段），避免指令时序不同造成的抖动。
+    node.say(f'遥控：前飞（目标离开码 0.6 m 以上，单段 {node.f2_offset_time:.1f} s）')
+    for _ in range(6):
+        node.spin_for(node.f2_offset_time,
+                      Twist(linear=_vec(node.cruise_vel, 0.0, 0.0)))
+        node.spin_for(0.5)
+        if node.horizontal_error() >= 0.60:
+            break
+    node.spin_for(0.5)
     pre_error = node.horizontal_error()
     node.say(f'接管前水平误差 = {pre_error:.2f} m')
 

@@ -615,3 +615,51 @@ ROS_DISTRO=humble  rclcpp=/opt/ros/humble
 立刻报 `AMENT_TRACE_SETUP_FILES: unbound variable` 退出，什么都检查不到。改成只 `set -o pipefail`
 并加注释说明原因 —— **这个环境里所有"source ROS 环境"的脚本都不能开 `set -u`**。
 
+---
+
+## 12. 附加交付：演示视频录制管线
+
+M6 之后按需求追加：用户要"录一段视频"用于展示。直接录 WSLg 窗口不可靠（远程桌面合成通道
+会让 3D 视口 stalled，录出来是冻住的画面），因此改为**离屏录制**：把相机放进仿真里，
+画面走 ROS 话题，再由 Python 编码成 mp4。整条链路不依赖任何窗口。
+
+### 12.1 实现
+
+| 组件 | 文件 | 作用 |
+|---|---|---|
+| 俯视机位 | `drone_bringup/models/overhead_cam/model.sdf` | 世界里一台静态相机：`pose 0 0 6.0 / pitch 90°`、`fov 1.05`、`960x540@10` |
+| 挂载 | `scripts/spawn_overhead_cam.sh` | 向运行中的世界 `create` 该模型，幂等 |
+| 桥接 | `drone_bringup/src/gz_sensor_bridge.cpp` 第二路图像通道 | gz 图像 → `/camera/overhead/image_raw`（参数 `enable_overhead` 等） |
+| 录制 | `drone_tools/drone_tools/record_video.py` | 订阅图像 + `/mission/status` + `/aruco/debug_image`，叠加 HUD 与小窗，写 mp4 |
+| 一条命令 | `scripts/record_video.sh` | 起 SITL → 挂机位 → 起流程（`start_overhead:=true`）→ 录制 → 跑验收 → 收尾 |
+
+### 12.2 实测结果
+
+`bash scripts/record_video.sh F2 70 auto`：
+
+```
+[overhead] 就位：/world/aruco/model/overhead_cam/link/link/sensor/camera/image 已有发布者
+相机帧率 26.8 Hz（134 帧 / 最近 5.0 s）        俯视相机帧率 8.8 Hz（44 帧 / 最近 5.0 s）
+录制结束：写入 1916 帧 / 85.2 s（22.5 fps），收到 698 帧、过快丢弃 0 帧
+[FLOW F2] RESULT: PASS   final_lateral = 0.03 m  final_altitude = 0.04 m  elapsed = 40.28 s
+产物：logs/videos/F2_125848.mp4（6.5 MB，960×540@25）
+```
+
+### 12.3 四个必须记住的坑
+
+1. **俯视相机不能配太大**：`1280×720@30` 会把机载主相机拖到 ~5 Hz、检测 4.6 Hz，F2 因此 FAIL
+   （ALIGN 反复丢码）。`960×540@10` 下主相机 26~28 Hz、俯视 8.6~9.6 Hz，F2 恢复 PASS。
+   软件渲染下两台相机抢同一个渲染器 —— 加相机就要降配。
+2. **`gz service create` 的字符串值必须双引号**：单引号会让请求串被截断，服务返回 `data: true`
+   但实体没建（判定要看 `gz topic -i` 有没有发布者，不能看 `gz model -p`）。
+3. **`-p duration:=85` 是 INTEGER**，节点若按 double 声明会抛
+   `InvalidParameterTypeException`，改用 `ParameterDescriptor(dynamic_typing=True)`。
+4. **`pkill -f` 的模式串会匹配到调用它的 shell 自己**，脚本里必须用更具体的
+   `lib/drone_tools/record_video`，否则表现为"命令无任何输出、退出码 0"。
+
+### 12.4 附带结论：MobaXterm 的 X server 可用
+
+用户提出"能不能用 X server 替代 WSLg"。实测：`XWin_MobaX.exe` 在 127.0.0.1:6000 监听，
+`xdpyinfo` 显示 X.Org 1.20.13 + GLX 存在，`DISPLAY=127.0.0.1:0 gz sim -g --render-engine ogre`
+能正常渲染出无人机与码板（无 OpenGL context 报错）。X11 的屏幕尺寸是 1024×768，比 WSLg 小。
+用法见 `manual_test.md` §6。

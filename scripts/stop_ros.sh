@@ -7,6 +7,7 @@ PATTERNS=(
   "mavros_node"
   "parameter_bridge"
   "gz_sensor_bridge"
+  "lib/drone_tools/record_video"
   "sim_bringup.launch.py"
   "flow_f1.launch.py"
   "flow_f2.launch.py"

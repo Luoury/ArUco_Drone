@@ -34,6 +34,8 @@ def generate_launch_description():
     start_mavros = LaunchConfiguration('start_mavros')
     start_camera = LaunchConfiguration('start_camera')
     start_odom = LaunchConfiguration('start_odom')
+    start_overhead = LaunchConfiguration('start_overhead')
+    overhead_model = LaunchConfiguration('overhead_model')
 
     gz_camera_head = ["'/world/' + '", world, "' + '/model/' + '", model,
                       "' + '/link/camera_link/sensor/camera'"]
@@ -41,6 +43,11 @@ def generate_launch_description():
     gz_info_topic = PythonExpression(gz_camera_head + [" + '/camera_info'"])
     gz_odom_topic = PythonExpression(
         ["'/model/' + '", model, "' + '/odometry_with_covariance'"])
+    # 俯视机位：模型名固定为 overhead_cam，挂在 /world/<world>/model/overhead_cam/...
+    gz_overhead_head = ["'/world/' + '", world, "' + '/model/' + '", overhead_model,
+                        "' + '/link/link/sensor/camera'"]
+    gz_overhead_image_topic = PythonExpression(gz_overhead_head + [" + '/image'"])
+    gz_overhead_info_topic = PythonExpression(gz_overhead_head + [" + '/camera_info'"])
 
     declared = [
         DeclareLaunchArgument('use_sim_time', default_value='true',
@@ -58,6 +65,10 @@ def generate_launch_description():
                               description='是否桥接相机图像（排查时可先关掉）'),
         DeclareLaunchArgument('start_odom', default_value='true',
                               description='是否桥接机体真值位姿到 /gz/drone_pose（精度验证用）'),
+        DeclareLaunchArgument('start_overhead', default_value='false',
+                              description='是否桥接俯视机位（录视频用；需先 spawn overhead_cam）'),
+        DeclareLaunchArgument('overhead_model', default_value='overhead_cam',
+                              description='俯视机位的 gz 模型名'),
     ]
 
     gz_sensor_bridge = Node(
@@ -76,6 +87,9 @@ def generate_launch_description():
                 'gz_info_topic': gz_info_topic,
                 'gz_odom_topic': gz_odom_topic,
                 'frame_id': 'camera_link',
+                'enable_overhead': start_overhead,
+                'gz_overhead_image_topic': gz_overhead_image_topic,
+                'gz_overhead_info_topic': gz_overhead_info_topic,
             },
         ],
     )

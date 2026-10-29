@@ -19,6 +19,7 @@ setup(
     entry_points={
         'console_scripts': [
             'verify_flow = drone_tools.verify_flow:main',
+            'record_video = drone_tools.record_video:main',
         ],
     },
 )
