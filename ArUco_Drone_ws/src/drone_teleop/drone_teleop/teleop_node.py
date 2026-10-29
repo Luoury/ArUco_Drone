@@ -36,12 +36,14 @@ from std_msgs.msg import String
 
 from drone_interfaces.msg import MissionStatus
 
-HELP = """\
-┌─ 键盘遥控 ──────────────────────────────────────────────┐
-│  w/s 前后   a/d 左右   r/f 升降   q/e 偏航             │
-│  Space 起飞/降落   1 MANUAL   0 降落   ESC 紧急降落     │
-│  h 帮助                                                 │
-└─────────────────────────────────────────────────────────┘"""
+HELP = """键盘遥控（输入焦点必须在这个终端窗口里）：
+  w / s    前进 / 后退        a / d    左移 / 右移
+  r / f    上升 / 下降        q / e    左偏航 / 右偏航
+  Space    未起飞 = 起飞到 1.5 m；已起飞 = 降落
+  1  MANUAL（手动）      2  ARUCO_LAND（视觉降落）
+  3  WAYPOINT（航点）    4  AUTO（全自主：航点→搜码→降落）
+  0  立即降落（LAND）      ESC / Ctrl-C  紧急降落      h  帮助
+"""
 
 
 class TeleopNode(Node):
@@ -64,6 +66,12 @@ class TeleopNode(Node):
         self.active_key = ''
         self.active_since = 0.0
 
+        if not sys.stdin.isatty():
+            self.get_logger().error(
+                '键盘遥控需要交互式终端：当前 stdin 不是 TTY（大概是被 nohup / 管道 / '
+                'launch 后台启动了）。请在 Windows 里打开一个 WSL 终端，直接运行 '
+                '`bash scripts/manual_demo.sh teleop`。')
+            raise SystemExit(2)
         self.old_term = termios.tcgetattr(sys.stdin)
         tty.setraw(sys.stdin.fileno())
         print(HELP, flush=True)

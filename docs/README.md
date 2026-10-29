@@ -3,6 +3,10 @@
 PX4 v1.17 SITL + Gazebo Harmonic（gz sim 8.10）+ ROS 2 Humble + MAVROS。
 需求书见仓库根目录 `无人机ARUCO自主降落仿真_需求书.md`。
 
+> **只想自己跑一下、看看画面？**
+> 看 [`manual_test.md`](manual_test.md)（手动测试与看画面指南），
+> 或者三步走：`bash scripts/manual_demo.sh start` → `... view` → `... teleop`。
+
 ## 目录结构
 
 ```
@@ -16,7 +20,7 @@ ArUco_Drone/
 │   ├── drone_teleop/       # 键盘遥控 teleop_node
 │   └── drone_tools/        # verify_flow 流程自动验收
 ├── scripts/                # 启动、诊断、验收脚本
-├── docs/                   # 本文档、troubleshooting.md、stage_reports.md
+├── docs/                   # 本文档、manual_test.md、flows.md、troubleshooting.md、stage_reports.md
 └── logs/                   # 运行日志（git 忽略）
 ```
 
@@ -58,6 +62,19 @@ ros2 launch drone_bringup flow_f1.launch.py start_teleop:=true
 ```
 
 停止：`bash scripts/sim.sh stop`；清 ROS 进程：`bash scripts/stop_ros.sh`。
+
+## 手动测试与看画面
+
+```bash
+bash scripts/manual_demo.sh start    # 起仿真 + 桥接 + MAVROS + 检测 + 降落 + 任务调度
+bash scripts/manual_demo.sh view     # 图像窗口：相机 + 检测叠加（推荐）
+bash scripts/manual_demo.sh gui      # Gazebo 3D 窗口
+bash scripts/manual_demo.sh teleop   # 键盘遥控（需要交互终端）
+bash scripts/manual_demo.sh status   # RTF / 相机帧 / 关键话题
+bash scripts/manual_demo.sh stop     # 全部停掉
+```
+
+细节（键位、预期现象、常见问题）见 [`manual_test.md`](manual_test.md)。
 
 ## 关键约定
 
