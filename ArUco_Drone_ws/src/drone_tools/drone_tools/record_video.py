@@ -78,7 +78,10 @@ class VideoRecorder(Node):
         # InvalidParameterTypeException: ... '85' of type 'INTEGER', expecting 'DOUBLE'
         self.fps = float(self.declare_parameter('fps', 25.0, dyn).value)
         self.duration = float(self.declare_parameter('duration', 0.0, dyn).value)
-        self.title = self.declare_parameter('title', '').value
+        # cv2.putText 用的是 Hershey 矢量字体，只认 ASCII：中文会被画成一串问号，
+        # 所以这里把非 ASCII 字符滤掉，滤空则回退成英文标题（HUD 用英文最稳）。
+        raw_title = self.declare_parameter('title', '').value
+        self.title = ''.join(c for c in raw_title if 32 <= ord(c) < 127) or 'ArUco Landing'
         self.overhead_topic = self.declare_parameter(
             'overhead_topic', '/camera/overhead/image_raw').value
         self.debug_topic = self.declare_parameter('debug_topic', '/aruco/debug_image').value

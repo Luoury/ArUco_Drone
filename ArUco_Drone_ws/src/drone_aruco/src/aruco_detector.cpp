@@ -15,6 +15,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <limits>
 #include <vector>
 
 #include <cv_bridge/cv_bridge.h>
@@ -187,11 +188,37 @@ private:
       if (!ids.empty()) {cv::aruco::drawDetectedMarkers(debug_bgr, corners, ids);}
     }
 
+    // marker_id < 0 表示"任意码"（多工位演示用）：同屏出现多个时，
+    // 取中心最靠近画面中心的那一个 —— 机载相机朝下，最近的码就在正下方。
     int hit_index = -1;
-    for (size_t i = 0; i < ids.size(); ++i) {
-      if (marker_id_ < 0 || ids[i] == marker_id_) {
-        hit_index = static_cast<int>(i);
-        break;
+    int hit_id = marker_id_;
+    if (marker_id_ >= 0) {
+      for (size_t i = 0; i < ids.size(); ++i) {
+        if (ids[i] == marker_id_) {
+          hit_index = static_cast<int>(i);
+          break;
+        }
+      }
+    } else {
+      double best = std::numeric_limits<double>::max();
+      for (size_t i = 0; i < ids.size(); ++i) {
+        const auto &c = corners[i];
+        double cx = 0.0;
+        double cy = 0.0;
+        for (const auto &pt : c) {
+          cx += pt.x;
+          cy += pt.y;
+        }
+        cx /= static_cast<double>(c.size());
+        cy /= static_cast<double>(c.size());
+        const double dx = cx - static_cast<double>(gray.cols) * 0.5;
+        const double dy = cy - static_cast<double>(gray.rows) * 0.5;
+        const double d2 = dx * dx + dy * dy;
+        if (d2 < best) {
+          best = d2;
+          hit_index = static_cast<int>(i);
+          hit_id = ids[i];
+        }
       }
     }
 
@@ -212,7 +239,7 @@ private:
           cv::aruco::drawAxis(debug_bgr, cam, dist, rvec, tvec, debug_axes_length_);
         }
         cv::putText(debug_bgr,
-                    cv::format("id=%d  z_cam=%.2fm  frame=%zu", marker_id_, tvec[2], frame_count_),
+                    cv::format("id=%d  z_cam=%.2fm  frame=%zu", hit_id, tvec[2], frame_count_),
                     cv::Point(12, 34), cv::FONT_HERSHEY_SIMPLEX, 0.9, cv::Scalar(0, 255, 0), 2);
       }
     } else if (publish_debug_ && hit_index < 0) {

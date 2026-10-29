@@ -66,6 +66,24 @@ public:
       declare_parameter("waypoint_state_topic", "/waypoint/state");
     const std::string waypoint_progress_topic =
       declare_parameter("waypoint_progress_topic", "/waypoint/progress");
+    // 多工位巡回（TOUR，演示用）：按 tour_stations 顺序逐个飞到工位正上方 →
+    // 交给 landing_controller 视觉降落 → 落地上锁后原地起飞 → 下一个工位。
+    // 每个工位一个 ArUco 码，检测端用 marker_id:=-1（任意码，取画面中心最近的）。
+    tour_goto_tol_ = declare_parameter("tour_goto_tol", 0.35);
+    tour_settle_hold_ = declare_parameter("tour_settle_hold", 1.0);
+    tour_goto_timeout_ = declare_parameter("tour_goto_timeout", 45.0);
+    tour_land_timeout_ = declare_parameter("tour_land_timeout", 90.0);
+    tour_takeoff_alt_ = declare_parameter("tour_takeoff_alt", 2.0);
+    tour_takeoff_timeout_ = declare_parameter("tour_takeoff_timeout", 40.0);
+    tour_approach_alt_ = declare_parameter("tour_approach_alt", 2.0);
+    tour_stations_ = declare_parameter<std::vector<double>>(
+      "tour_stations", std::vector<double>{});
+    if (!tour_stations_.empty() && tour_stations_.size() % 3 != 0) {
+      RCLCPP_ERROR(get_logger(),
+        "tour_stations 长度 %zu 不是 3 的倍数（应为 x,y,z 三元组），TOUR 会被拒绝",
+        tour_stations_.size());
+      tour_stations_.clear();
+    }
 
     status_pub_ = create_publisher<drone_interfaces::msg::MissionStatus>("/mission/status", 10);
 
@@ -171,10 +189,10 @@ private:
       return;
     }
     if (mode != "MANUAL" && mode != "HOVER" && mode != "LAND" && mode != "IDLE" &&
-      mode != "ARUCO_LAND" && mode != "WAYPOINT" && mode != "AUTO")
+      mode != "ARUCO_LAND" && mode != "WAYPOINT" && mode != "AUTO" && mode != "TOUR")
     {
-      RCLCPP_WARN(get_logger(), "未知模式 %s（可选 MANUAL/HOVER/LAND/ARUCO_LAND/WAYPOINT/AUTO）",
-        mode.c_str());
+      RCLCPP_WARN(get_logger(),
+        "未知模式 %s（可选 MANUAL/HOVER/LAND/ARUCO_LAND/WAYPOINT/AUTO/TOUR）", mode.c_str());
       return;
     }
     pending_mode_ = mode;
@@ -305,6 +323,36 @@ private:
       return;
     }
 
+    if (want == "TOUR") {
+      const size_t stations = tour_stations_.size() / 3;
+      if (stations == 0) {
+        RCLCPP_ERROR(get_logger(), "TOUR 需要 tour_stations 参数（x,y,z 三元组列表）");
+        return;
+      }
+      if (!fc_->armed()) {
+        drone_control::OffboardOptions options;
+        options.rate_hz = control_rate_;
+        if (!fc_->takeoff(tour_takeoff_alt_, options, takeoff_tolerance_)) {
+          RCLCPP_ERROR(get_logger(), "TOUR 起飞失败，保持 %s", mode_.c_str());
+          return;
+        }
+      }
+      hold_ = fc_->localPose();
+      mode_ = "HOVER";
+      state_ = "SWITCHING";
+      hoverFor(mode_switch_hover_);
+      tour_index_ = 0;
+      tour_phase_ = "GOTO";
+      tour_dwell_ = 0.0;
+      tour_begin_ = SteadyClock::now();
+      tour_phase_begin_ = tour_begin_;
+      mode_ = "TOUR";
+      state_ = "TOUR_GOTO";
+      RCLCPP_INFO(get_logger(), "TOUR 开始：共 %zu 个工位，第 1 站 (%.2f, %.2f)",
+        stations, tour_stations_[0], tour_stations_[1]);
+      return;
+    }
+
     if (want == "ARUCO_LAND") {
       // 需求书 §5.5：先停当前输出 → 置 HOVER → 等 0.5 s → 再交给 landing_controller，
       // 避免两个节点同时发 setpoint 打架。
@@ -344,6 +392,14 @@ private:
       if (mode_ == "WAYPOINT") {
         callTrigger("/waypoint/stop", waypoint_stop_client_, waypoint_start_timeout_);
         waypoint_state_ = "IDLE";
+      }
+      // 从 TOUR 切出去时，先叫停 landing_controller
+      if (mode_ == "TOUR") {
+        tour_phase_.clear();
+        if (landing_active()) {
+          callTrigger("/aruco/landing/stop", landing_stop_client_, landing_start_timeout_);
+          landing_state_ = "IDLE";
+        }
       }
       // 从 AUTO 切出去时，两个被委托的节点都要叫停
       if (mode_ == "AUTO") {
@@ -399,6 +455,12 @@ private:
     // AUTO：两个阶段都委托给别人，本节点只盯着阶段推进，一个字都不许发
     if (mode_ == "AUTO") {
       monitorAuto();
+      return;
+    }
+
+    // TOUR：飞到工位阶段由本节点发位置设定点；降落阶段交给 landing_controller
+    if (mode_ == "TOUR") {
+      monitorTour();
       return;
     }
 
@@ -523,6 +585,120 @@ private:
     }
   }
 
+  /// 多工位巡回：GOTO（本节点发位置设定点）→ LAND（交给 landing_controller）
+  /// → 落地上锁 → 原地起飞 → 下一个工位。最后一站落地上锁后收工。
+  void monitorTour()
+  {
+    const size_t stations = tour_stations_.size() / 3;
+    if (tour_index_ >= stations) {
+      mode_ = "IDLE";
+      state_ = "TOUR_DONE";
+      return;
+    }
+
+    const double sx = tour_stations_[tour_index_ * 3 + 0];
+    const double sy = tour_stations_[tour_index_ * 3 + 1];
+    const double spent = std::chrono::duration<double>(
+      SteadyClock::now() - tour_phase_begin_).count();
+
+    if (tour_phase_ == "GOTO") {
+      drone_control::EnuPose target;
+      target.x = sx;
+      target.y = sy;
+      target.z = tour_approach_alt_;
+      fc_->publishPositionSetpoint(target, 0.0);
+      const auto p = fc_->localPose();
+      const double dx = p.x - sx;
+      const double dy = p.y - sy;
+      const double dz = p.z - tour_approach_alt_;
+      const double err = std::sqrt(dx * dx + dy * dy + dz * dz);
+      if (err <= tour_goto_tol_) {
+        tour_dwell_ += 1.0 / control_rate_;
+      } else {
+        tour_dwell_ = 0.0;
+      }
+      if (tour_dwell_ >= tour_settle_hold_) {
+        tour_dwell_ = 0.0;
+        tour_phase_ = "LAND";
+        tour_phase_begin_ = SteadyClock::now();
+        state_ = "TOUR_LAND";
+        // 清掉上一站留下的 DONE，否则新一站会在几十毫秒内被误判成"已落地"
+        landing_state_.clear();
+        RCLCPP_INFO(get_logger(), "TOUR %zu/%zu 到站（误差 %.2f m），交给视觉降落",
+          tour_index_ + 1, stations, err);
+        if (!callTrigger("/aruco/landing/start", landing_start_client_,
+          landing_start_timeout_))
+        {
+          RCLCPP_ERROR(get_logger(), "TOUR 到站后启动降落失败 → 悬停");
+          tour_phase_.clear();
+          mode_ = "HOVER";
+          state_ = "TOUR_ABORT";
+        }
+        return;
+      }
+      if (spent > tour_goto_timeout_) {
+        RCLCPP_WARN(get_logger(), "TOUR 第 %zu 站飞行超时 %.0f s（误差 %.2f m）→ 直接尝试降落",
+          tour_index_ + 1, spent, err);
+        tour_phase_ = "LAND";
+        tour_phase_begin_ = SteadyClock::now();
+        state_ = "TOUR_LAND";
+        callTrigger("/aruco/landing/start", landing_start_client_, landing_start_timeout_);
+      }
+      return;
+    }
+
+    if (tour_phase_ == "LAND") {
+      // 只在降落真正开始 1 s 之后才承认 DONE：服务调用返回与新状态之间存在竞争
+      if (landing_state_ == "DONE" && spent > 1.0) {
+        landing_state_ = "IDLE";
+        RCLCPP_INFO(get_logger(), "TOUR %zu/%zu 已落到工位码上（%.1f s）",
+          tour_index_ + 1, stations, spent);
+        if (tour_index_ + 1 >= stations) {
+          const double total = std::chrono::duration<double>(
+            SteadyClock::now() - tour_begin_).count();
+          tour_phase_.clear();
+          mode_ = "IDLE";
+          state_ = "TOUR_DONE";
+          RCLCPP_INFO(get_logger(), "TOUR 全部 %zu 个工位完成（总耗时 %.1f s），已回到基站",
+            stations, total);
+          return;
+        }
+        ++tour_index_;
+        tour_phase_ = "TAKEOFF";
+        tour_phase_begin_ = SteadyClock::now();
+        state_ = "TOUR_TAKEOFF";
+        drone_control::OffboardOptions options;
+        options.rate_hz = control_rate_;
+        options.mode_timeout = std::chrono::seconds(
+          static_cast<int>(tour_takeoff_timeout_));
+        if (!fc_->takeoff(tour_takeoff_alt_, options, takeoff_tolerance_)) {
+          RCLCPP_ERROR(get_logger(), "TOUR 第 %zu 站起飞失败 → 悬停", tour_index_ + 1);
+          tour_phase_.clear();
+          mode_ = "HOVER";
+          state_ = "TOUR_ABORT";
+          return;
+        }
+        tour_phase_ = "GOTO";
+        tour_phase_begin_ = SteadyClock::now();
+        state_ = "TOUR_GOTO";
+        RCLCPP_INFO(get_logger(), "TOUR 前往第 %zu/%zu 站 (%.2f, %.2f)",
+          tour_index_ + 1, stations, tour_stations_[tour_index_ * 3],
+          tour_stations_[tour_index_ * 3 + 1]);
+        return;
+      }
+      if (spent > tour_land_timeout_) {
+        RCLCPP_WARN(get_logger(), "TOUR 第 %zu 站降落超时 %.0f s → 悬停",
+          tour_index_ + 1, spent);
+        callTrigger("/aruco/landing/stop", landing_stop_client_, landing_start_timeout_);
+        landing_state_ = "IDLE";
+        tour_phase_.clear();
+        mode_ = "HOVER";
+        state_ = "TOUR_ABORT";
+      }
+      return;
+    }
+  }
+
   /// 监视 landing_controller：它落地上锁后（DONE）本节点收回控制权
   void monitorLanding()
   {
@@ -644,6 +820,20 @@ private:
 
   // 航点链路（M4）
   double waypoint_start_timeout_{5.0};
+  // 多工位巡回（TOUR）
+  std::vector<double> tour_stations_;   // 扁平 x,y 三元组（z 取 tour_approach_alt_）
+  size_t tour_index_{0};
+  std::string tour_phase_;              // "GOTO" / "LAND" / "TAKEOFF"
+  double tour_dwell_{0.0};
+  SteadyClock::time_point tour_phase_begin_{};
+  SteadyClock::time_point tour_begin_{};
+  double tour_goto_tol_{0.35};
+  double tour_settle_hold_{1.0};
+  double tour_goto_timeout_{45.0};
+  double tour_land_timeout_{90.0};
+  double tour_takeoff_alt_{2.0};
+  double tour_takeoff_timeout_{40.0};
+  double tour_approach_alt_{2.0};
   double auto_timeout_{120.0};      // s，AUTO 全链路兜底超时（超了就强制降落）
   std::string auto_phase_;          // AUTO 内部阶段："WAYPOINT" / "LAND"
   SteadyClock::time_point auto_begin_{};

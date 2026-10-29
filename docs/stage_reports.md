@@ -663,3 +663,45 @@ M6 之后按需求追加：用户要"录一段视频"用于展示。直接录 WS
 `xdpyinfo` 显示 X.Org 1.20.13 + GLX 存在，`DISPLAY=127.0.0.1:0 gz sim -g --render-engine ogre`
 能正常渲染出无人机与码板（无 OpenGL context 报错）。X11 的屏幕尺寸是 1024×768，比 WSLg 小。
 用法见 `manual_test.md` §6。
+
+## 13. 附加交付：多工位巡回演示（TOUR）
+
+**需求**（m03708）：视频里要同时看到无人机和码、机位尽量斜俯视；
+多航点演示要"从基站起飞 → 到每个工位降落 → 再起飞 → 绕一圈回基站"。
+
+**实现**
+
+| 交付物 | 说明 |
+|---|---|
+| `mission_manager` 的 `TOUR` 模式 | GOTO（本节点发位置设定点）→ LAND（交给 `landing_controller`）→ 落地上锁 → 原地起飞 → 下一站；最后一站落地上锁后 `TOUR_DONE` |
+| `config/tour.yaml` | 四个工位坐标 + 各阶段超时（代码里无魔法数字） |
+| `launch/flow_tour.launch.py` | 一条 launch 起全链路，`marker_id:=-1` 表示"取画面中心最近的码"（多码同屏） |
+| `models/demo_cam` | 斜俯视演示机位：`(-2.2, -2.2, 3.8)`、俯角 37.7°、偏航 45°、FOV 1.3 |
+| `models/arucotag_{1,2,3}` | 三个工位码（DICT_4X4_50 的 1/2/3），与基站码 0 同尺寸 |
+| `scripts/spawn_course.sh` | 向运行中的世界摆三个工位码 + 演示机位（幂等，会回读世界确认） |
+| `scripts/demo_tour.sh` | 一条命令：清场 → 内存预检 → 起 SITL → 摆场景 → 起链路 → 录制 → 发 TOUR → 等完成 → 收尾 |
+| `scripts/tour_watch.py` | 盯 `/mission/status` 打印状态迁移，`TOUR_DONE` 退出 0 |
+
+**实测（两次完整跑）**
+
+```
+TOUR 1/4 到站（误差 0.12 m），交给视觉降落
+TOUR 1/4 已落到工位码上（17.4 s）
+TOUR 2/4 到站（误差 0.12 m）… 已落到工位码上（17.2 s）
+TOUR 3/4 到站（误差 0.10 m）… 已落到工位码上（15.2 s）
+TOUR 4/4 到站（误差 0.09 m）… 已落到工位码上（17.3 s）
+TOUR 全部 4 个工位完成（总耗时 110.5 s），已回到基站
+```
+
+录像：`logs/videos/tour_140756.mp4`（9.2 MB, 95.5 s）、
+`logs/videos/tour_141335.mp4`（14 MB, 134.4 s, 960×540 @ 25 fps，含 HUD 与机载小窗）。
+
+**这一轮踩到的坑**
+
+| 坑 | 现象 | 根因与修法 |
+|---|---|---|
+| Z1 工位数不是 3 的倍数 | `tour_stations 长度 8 不是 3 的倍数` | 代码按 `(x,y,z)` 三元组取下标（z 目前用 `tour_approach_alt`），配置必须写 12 个值 |
+| Z2 模式名不在白名单 | `未知模式 TOUR（可选 MANUAL/…/AUTO）` | 只加了处理分支、忘了加模式校验白名单，补 `&& mode != "TOUR"` |
+| Z3 上一站的 `DONE` 污染下一站 | 第 2 站"已落到工位码上（0.0 s）"，随后第 3 站启动降落超时 → `TOUR_ABORT` | `landing_state_` 是 latched 的最后一帧，进入 LAND 阶段时先 `clear()`，并要求 `spent > 1.0 s` 才承认 `DONE` |
+| Z4 HUD 中文变问号 | 视频左上角 `ArUco ?????????` | `cv2.putText` 只认 ASCII，标题统一用英文，代码里也做了非 ASCII 过滤兜底 |
+| Z5 软件渲染下视频比真实更短 | 134 s 的飞行录成 95 s（快放） | 录制器按"落后就复制当前帧"保持时基，原来每次只补 3 帧，改成最多补 8 帧 |

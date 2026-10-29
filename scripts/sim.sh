@@ -30,6 +30,9 @@ GZ_PLUGIN_FIX="${GZ_PLUGIN_FIX:-$(dirname "$0")/fix_gz_plugins.sh}"
 # 丢掉 base_link 上的 4 个传感器（PX4 于是报 Accel/Gyro/baro/compass missing，无法 arm）。
 # 启动前用 scripts/fix_gz_model.sh 把模型展平并让 PX4 用展平版。
 GZ_MODEL_FIX="${GZ_MODEL_FIX:-$(dirname "$0")/fix_gz_model.sh}"
+# 仓库自带的 gz 模型（overhead_cam / demo_cam / arucotag_1..3）：加进 GZ_SIM_RESOURCE_PATH，
+# 这样 model.sdf 里的 model://<名字>/纹理.png 能解析，也能用 sdf_filename: "model://xxx"。
+OWN_MODELS="${OWN_MODELS:-$(cd "$(dirname "$0")/.." && pwd)/ArUco_Drone_ws/src/drone_bringup/models}"
 
 usage() {
   sed -n '2,20p' "$0"
@@ -84,6 +87,7 @@ start() {
     set +u
     # shellcheck disable=SC1091
     source ./gz_env.sh
+    export GZ_SIM_RESOURCE_PATH="$OWN_MODELS:$GZ_SIM_RESOURCE_PATH"
     set -u
     exec env \
       HEADLESS=1 \
