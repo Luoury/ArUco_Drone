@@ -150,7 +150,7 @@ bash scripts/run_flow.sh F1      # 或 F2 / F3 / F4 / F5
 
 <div align="center">
 <img src="docs/images/m1_debug_image.png" alt="检测叠加图" width="46%">
-<img src="docs/images/manual_gz_gui.png" alt="Gazebo 3D" width="46%">
+<img src="docs/images/f2_landing.png" alt="F2 视觉降落" width="46%">
 </div>
 
 ---

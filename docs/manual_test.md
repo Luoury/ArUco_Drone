@@ -118,7 +118,7 @@ Space    未起飞 = 起飞到 1.5 m；已起飞 = 降落
 
 第 3 步的 3D 世界（实测截图）：
 
-![Gazebo 3D 窗口](images/manual_gz_gui.png)
+![Gazebo 3D 窗口](../docs/images/demo_tour.png)
 
 ---
 
